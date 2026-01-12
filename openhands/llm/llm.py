@@ -668,10 +668,16 @@ class LLM(RetryMixin, DebugMixin):
             if cache_write_tokens:
                 stats += 'Input tokens (cache write): ' + str(cache_write_tokens) + '\n'
 
-            # Get context window from model info
+            # Get context window from model info, fall back to config when unknown
             context_window = 0
             if self.model_info and 'max_input_tokens' in self.model_info:
                 context_window = self.model_info['max_input_tokens']
+            elif (
+                self.config.max_input_tokens is not None
+                and isinstance(self.config.max_input_tokens, int)
+            ):
+                context_window = self.config.max_input_tokens
+            if context_window:
                 logger.debug(f'Using context window: {context_window}')
 
             # Record in metrics
@@ -730,6 +736,19 @@ class LLM(RetryMixin, DebugMixin):
                 )
             )
         except Exception as e:
+            # If token counting fails, try a safe fallback tokenizer before giving up.
+            if self.tokenizer is None:
+                try:
+                    fallback = create_pretrained_tokenizer('cl100k_base')
+                    return int(
+                        litellm.token_counter(
+                            model=self.config.model,
+                            messages=messages,
+                            custom_tokenizer=fallback,
+                        )
+                    )
+                except Exception:
+                    pass
             # limit logspam in case token count is not supported
             logger.error(
                 f'Error getting token count for\n model {self.config.model}\n{e}'

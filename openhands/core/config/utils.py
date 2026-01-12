@@ -402,6 +402,11 @@ def apply_context_strategy(
 
         strategy = agent_config.context_strategy.strip().lower().replace('-', '_')
         llm_config = cfg.get_llm_config_from_agent_config(agent_config)
+        if (
+            agent_config.context_window_limit_tokens is not None
+            and llm_config.max_input_tokens is None
+        ):
+            llm_config.max_input_tokens = agent_config.context_window_limit_tokens
 
         if strategy == 'react':
             agent_config.condenser = NoOpCondenserConfig()
