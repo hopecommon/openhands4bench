@@ -272,6 +272,12 @@ enable_finish = true
 # length limit
 enable_history_truncation = true
 
+# Optional context strategy override (e.g., "react", "summary", "discard_all")
+#context_strategy = "summary"
+
+# Optional max context window (tokens) before applying the strategy
+#context_window_limit_tokens = 128000
+
 # Whether the condensation request tool is enabled
 enable_condensation_request = false
 

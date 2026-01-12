@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from openhands.core.config.condenser_config import LLMSummarizingCondenserConfig
+from openhands.core.logger import openhands_logger as logger
 from openhands.core.message import Message, TextContent
 from openhands.events.action.agent import CondensationAction
 from openhands.events.observation.agent import AgentCondensationObservation
@@ -145,8 +146,26 @@ CURRENT_STATE: Last flip: Heads, Haiku count: 15/20"""
         )
         summary = response.choices[0].message.content
 
+        total_events = len(view)
+        discard_ratio = (
+            (len(forgotten_events) / total_events) if total_events else 0.0
+        )
+
         self.add_metadata('response', response.model_dump())
         self.add_metadata('metrics', self.llm.metrics.get())
+        self.add_metadata('summary_length', len(summary))
+        self.add_metadata('forgotten_event_count', len(forgotten_events))
+        self.add_metadata('discard_ratio', discard_ratio)
+
+        summary_preview = summary
+        if len(summary_preview) > 1000:
+            summary_preview = summary_preview[:1000] + '...(truncated)'
+        logger.info(
+            'LLMSummarizingCondenser: summarized %s events into %s chars',
+            len(forgotten_events),
+            len(summary),
+        )
+        logger.info('LLMSummarizingCondenser summary: %s', summary_preview)
 
         return Condensation(
             action=CondensationAction(

@@ -67,6 +67,18 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         help='Replace default Agent ([agent] section in config.toml) config with the specified Agent config, e.g. "CodeAct" for [agent.CodeAct] section in config.toml',
     )
     parser.add_argument(
+        '--context-strategy',
+        default=None,
+        type=str,
+        help='Context strategy override (e.g., react, summary, discard_all).',
+    )
+    parser.add_argument(
+        '--context-window-limit-tokens',
+        default=None,
+        type=int,
+        help='Maximum context window size in tokens before applying strategy.',
+    )
+    parser.add_argument(
         '-v', '--version', action='store_true', help='Show version information'
     )
 

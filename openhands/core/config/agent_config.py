@@ -54,6 +54,10 @@ class AgentConfig(BaseModel):
     """A list of microagents to disable (by name, without .py extension, e.g. ["github", "lint"]). Default is None."""
     enable_history_truncation: bool = Field(default=True)
     """Whether history should be truncated to continue the session when hitting LLM context length limit."""
+    context_strategy: str | None = Field(default=None)
+    """Optional context management strategy name (e.g., 'react', 'summary', 'discard_all')."""
+    context_window_limit_tokens: int | None = Field(default=None)
+    """Maximum allowed context length (tokens) before applying the context strategy."""
     enable_som_visual_browsing: bool = Field(default=True)
     """Whether to enable SoM (Set of Marks) visual browsing."""
     enable_plan_mode: bool = Field(default=True)

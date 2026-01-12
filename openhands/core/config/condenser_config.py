@@ -185,6 +185,14 @@ class ConversationWindowCondenserConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 
+class ToolResponseDiscardCondenserConfig(BaseModel):
+    """Configuration for ToolResponseDiscardCondenser."""
+
+    type: Literal['tool_response_discard'] = Field(default='tool_response_discard')
+
+    model_config = ConfigDict(extra='forbid')
+
+
 # Type alias for convenience
 CondenserConfig = (
     NoOpCondenserConfig
@@ -197,6 +205,7 @@ CondenserConfig = (
     | StructuredSummaryCondenserConfig
     | CondenserPipelineConfig
     | ConversationWindowCondenserConfig
+    | ToolResponseDiscardCondenserConfig
 )
 
 
@@ -300,6 +309,7 @@ def create_condenser_config(condenser_type: str, data: dict) -> CondenserConfig:
         'pipeline': CondenserPipelineConfig,
         'conversation_window': ConversationWindowCondenserConfig,
         'browser_output_masking': BrowserOutputCondenserConfig,
+        'tool_response_discard': ToolResponseDiscardCondenserConfig,
     }
 
     if condenser_type not in condenser_classes:

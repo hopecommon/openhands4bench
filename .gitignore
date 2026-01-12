@@ -262,3 +262,5 @@ containers/runtime/code
 test-results
 .sessions
 .eval_sessions
+
+.sii/

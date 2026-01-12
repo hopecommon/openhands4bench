@@ -25,6 +25,9 @@ from openhands.memory.condenser.impl.recent_events_condenser import (
 from openhands.memory.condenser.impl.structured_summary_condenser import (
     StructuredSummaryCondenser,
 )
+from openhands.memory.condenser.impl.tool_response_discard_condenser import (
+    ToolResponseDiscardCondenser,
+)
 
 __all__ = [
     'AmortizedForgettingCondenser',
@@ -38,4 +41,5 @@ __all__ = [
     'StructuredSummaryCondenser',
     'CondenserPipeline',
     'ConversationWindowCondenser',
+    'ToolResponseDiscardCondenser',
 ]

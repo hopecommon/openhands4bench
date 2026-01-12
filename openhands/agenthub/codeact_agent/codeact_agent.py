@@ -38,9 +38,14 @@ from openhands.agenthub.codeact_agent.tools.think import ThinkTool
 from openhands.controller.agent import Agent
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
+from openhands.core.exceptions import LLMContextWindowExceedError
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.message import Message
-from openhands.events.action import AgentFinishAction, MessageAction
+from openhands.events.action import (
+    AgentFinishAction,
+    CondensationRequestAction,
+    MessageAction,
+)
 from openhands.events.event import Event
 from openhands.llm.llm_utils import check_tools
 from openhands.memory.condenser import Condenser
@@ -220,6 +225,24 @@ class CodeActAgent(Agent):
         messages = self._get_messages(
             condensed_history, initial_user_message, forgotten_event_ids
         )
+        context_limit = self.config.context_window_limit_tokens
+        if context_limit:
+            try:
+                token_count = self.llm.get_token_count(messages)
+            except Exception as e:
+                logger.warning(f'Failed to estimate token count: {e}')
+            else:
+                if token_count > context_limit:
+                    logger.warning(
+                        'Context window limit exceeded: %s tokens > %s tokens',
+                        token_count,
+                        context_limit,
+                    )
+                    if self.config.enable_history_truncation:
+                        return CondensationRequestAction()
+                    raise LLMContextWindowExceedError(
+                        f'Conversation exceeds configured context window limit ({token_count} > {context_limit}).'
+                    )
         params: dict = {
             'messages': messages,
         }

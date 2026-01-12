@@ -24,6 +24,9 @@ from openhands.core.config.agent_config import AgentConfig
 from openhands.core.config.arg_utils import get_headless_parser
 from openhands.core.config.condenser_config import (
     CondenserConfig,
+    LLMSummarizingCondenserConfig,
+    NoOpCondenserConfig,
+    ToolResponseDiscardCondenserConfig,
     condenser_config_from_toml_section,
     create_condenser_config,
 )
@@ -383,6 +386,50 @@ def get_or_create_jwt_secret(file_store: FileStore) -> str:
         return new_secret
 
 
+def apply_context_strategy(
+    cfg: OpenHandsConfig, agent_name: str | None = None
+) -> None:
+    """Apply context strategy overrides to agent configurations."""
+    if agent_name:
+        agent_names = [agent_name]
+    else:
+        agent_names = list(cfg.agents.keys()) or ['agent']
+
+    for name in agent_names:
+        agent_config = cfg.get_agent_config(name)
+        if not agent_config.context_strategy:
+            continue
+
+        strategy = agent_config.context_strategy.strip().lower().replace('-', '_')
+        llm_config = cfg.get_llm_config_from_agent_config(agent_config)
+
+        if strategy == 'react':
+            agent_config.condenser = NoOpCondenserConfig()
+            agent_config.enable_history_truncation = False
+        elif strategy in ('summary', 'summarize'):
+            agent_config.condenser = LLMSummarizingCondenserConfig(
+                llm_config=llm_config,
+                type='llm',
+            )
+            agent_config.enable_history_truncation = True
+        elif strategy in ('discard_all', 'tool_response_discard'):
+            agent_config.condenser = ToolResponseDiscardCondenserConfig()
+            agent_config.enable_history_truncation = True
+        else:
+            logger.openhands_logger.warning(
+                f'Unknown context strategy "{agent_config.context_strategy}" for agent "{name}".'
+            )
+            continue
+
+        logger.openhands_logger.info(
+            'Context strategy applied: agent=%s strategy=%s condenser=%s history_truncation=%s',
+            name,
+            agent_config.context_strategy,
+            agent_config.condenser.__class__.__name__,
+            agent_config.enable_history_truncation,
+        )
+
+
 def finalize_config(cfg: OpenHandsConfig) -> None:
     """More tweaks to the config after it's been loaded."""
     # Handle the sandbox.volumes parameter
@@ -472,6 +519,8 @@ def finalize_config(cfg: OpenHandsConfig) -> None:
             'Automatically disabled Jupyter plugin and browsing for all agents '
             'because CLIRuntime is selected and does not support IPython execution.'
         )
+
+    apply_context_strategy(cfg)
 
 
 def get_agent_config_arg(
@@ -908,5 +957,20 @@ def setup_config_from_args(args: argparse.Namespace) -> OpenHandsConfig:
     # Read selected repository in config for use by CLI and main.py
     if hasattr(args, 'selected_repo') and args.selected_repo is not None:
         config.sandbox.selected_repo = args.selected_repo
+
+    # Apply context strategy override from CLI if provided
+    if hasattr(args, 'context_strategy') and args.context_strategy:
+        agent_name = config.default_agent
+        agent_config = config.get_agent_config(agent_name)
+        agent_config.context_strategy = args.context_strategy
+        apply_context_strategy(config, agent_name)
+
+    if (
+        hasattr(args, 'context_window_limit_tokens')
+        and args.context_window_limit_tokens is not None
+    ):
+        agent_name = config.default_agent
+        agent_config = config.get_agent_config(agent_name)
+        agent_config.context_window_limit_tokens = args.context_window_limit_tokens
 
     return config
