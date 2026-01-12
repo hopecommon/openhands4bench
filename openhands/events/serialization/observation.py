@@ -6,6 +6,7 @@ from openhands.events.observation.agent import (
     AgentCondensationObservation,
     AgentStateChangedObservation,
     AgentThinkObservation,
+    ContextStrategyObservation,
     MicroagentKnowledge,
     RecallObservation,
 )
@@ -48,6 +49,7 @@ observations = (
     UserRejectObservation,
     AgentCondensationObservation,
     AgentThinkObservation,
+    ContextStrategyObservation,
     RecallObservation,
     MCPObservation,
     FileDownloadObservation,

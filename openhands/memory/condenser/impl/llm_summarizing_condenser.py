@@ -173,6 +173,13 @@ CURRENT_STATE: Last flip: Heads, Haiku count: 15/20"""
                 forgotten_events_end_id=max(event.id for event in forgotten_events),
                 summary=summary,
                 summary_offset=self.keep_first,
+                metadata={
+                    'strategy': 'summary',
+                    'trigger': 'condensation_request',
+                    'summary_length': len(summary),
+                    'forgotten_event_count': len(forgotten_events),
+                    'discard_ratio': discard_ratio,
+                },
             )
         )
 

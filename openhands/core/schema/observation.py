@@ -68,3 +68,6 @@ class ObservationType(str, Enum):
 
     LOOP_DETECTION = 'loop_detection'
     """Results of a dead-loop detection"""
+
+    CONTEXT_STRATEGY = 'context_strategy'
+    """Result of applying a context management strategy."""

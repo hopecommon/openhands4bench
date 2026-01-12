@@ -5,6 +5,8 @@ from openhands.events.action import (
     BrowseInteractiveAction,
     BrowseURLAction,
     CmdRunAction,
+    CondensationAction,
+    CondensationRequestAction,
     FileEditAction,
     FileReadAction,
     FileWriteAction,
@@ -113,6 +115,38 @@ def test_agent_reject_action_serialization_deserialization():
         'args': {'outputs': {}, 'thought': ''},
     }
     serialization_deserialization(original_action_dict, AgentRejectAction)
+
+
+def test_condensation_request_action_serialization_deserialization():
+    original_action_dict = {
+        'action': 'condensation_request',
+        'args': {
+            'context_strategy': 'discard_all',
+            'token_count': 1234,
+            'context_limit': 1000,
+            'trigger': 'context_window_limit',
+        },
+    }
+    serialization_deserialization(original_action_dict, CondensationRequestAction)
+
+
+def test_condensation_action_metadata_serialization_deserialization():
+    original_action_dict = {
+        'action': 'condensation',
+        'args': {
+            'forgotten_event_ids': [],
+            'forgotten_events_start_id': None,
+            'forgotten_events_end_id': None,
+            'summary': None,
+            'summary_offset': None,
+            'metadata': {
+                'strategy': 'discard_all',
+                'redacted_tool_responses': 3,
+                'discard_ratio': 0.5,
+            },
+        },
+    }
+    serialization_deserialization(original_action_dict, CondensationAction)
 
 
 def test_cmd_run_action_serialization_deserialization():

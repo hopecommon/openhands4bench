@@ -37,7 +37,16 @@ class ToolResponseDiscardCondenser(RollingCondenser):
             total_events,
         )
 
-        action = CondensationAction(forgotten_event_ids=[])
+        action = CondensationAction(
+            forgotten_event_ids=[],
+            metadata={
+                'strategy': 'discard_all',
+                'trigger': 'condensation_request',
+                'total_events': total_events,
+                'redacted_tool_responses': redacted_count,
+                'discard_ratio': discard_ratio,
+            },
+        )
         return Condensation(action=action)
 
     def should_condense(self, view: View) -> bool:

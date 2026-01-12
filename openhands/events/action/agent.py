@@ -135,6 +135,9 @@ class CondensationAction(Action):
     summary_offset: int | None = None
     """An optional offset to the start of the resulting view indicating where the summary should be inserted."""
 
+    metadata: dict[str, Any] | None = None
+    """Optional metadata about the condensation (strategy, counts, ratios, etc.)."""
+
     def _validate_field_polymorphism(self) -> bool:
         """Check if the optional fields are instantiated in a valid configuration."""
         # For the forgotton events, there are only two valid configurations:
@@ -197,6 +200,10 @@ class CondensationRequestAction(Action):
     """
 
     action: str = ActionType.CONDENSATION_REQUEST
+    context_strategy: str | None = None
+    token_count: int | None = None
+    context_limit: int | None = None
+    trigger: str | None = None
 
     @property
     def message(self) -> str:

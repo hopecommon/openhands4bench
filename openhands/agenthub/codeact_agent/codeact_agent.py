@@ -239,7 +239,12 @@ class CodeActAgent(Agent):
                         context_limit,
                     )
                     if self.config.enable_history_truncation:
-                        return CondensationRequestAction()
+                        return CondensationRequestAction(
+                            context_strategy=self.config.context_strategy,
+                            token_count=token_count,
+                            context_limit=context_limit,
+                            trigger='context_window_limit',
+                        )
                     raise LLMContextWindowExceedError(
                         f'Conversation exceeds configured context window limit ({token_count} > {context_limit}).'
                     )

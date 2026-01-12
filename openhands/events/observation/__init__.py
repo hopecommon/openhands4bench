@@ -3,6 +3,7 @@ from openhands.events.observation.agent import (
     AgentCondensationObservation,
     AgentStateChangedObservation,
     AgentThinkObservation,
+    ContextStrategyObservation,
     RecallObservation,
 )
 from openhands.events.observation.browse import BrowserOutputObservation
@@ -33,6 +34,7 @@ __all__ = [
     'Observation',
     'NullObservation',
     'AgentThinkObservation',
+    'ContextStrategyObservation',
     'CmdOutputObservation',
     'CmdOutputMetadata',
     'IPythonRunCellObservation',

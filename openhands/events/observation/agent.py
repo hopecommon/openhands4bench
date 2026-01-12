@@ -45,6 +45,22 @@ class AgentThinkObservation(Observation):
 
 
 @dataclass
+class ContextStrategyObservation(Observation):
+    """Records context strategy triggers and condensation metadata."""
+
+    observation: str = ObservationType.CONTEXT_STRATEGY
+    strategy: str | None = None
+    token_count: int | None = None
+    context_limit: int | None = None
+    trigger: str | None = None
+    metadata: dict | None = None
+
+    @property
+    def message(self) -> str:
+        return self.content
+
+
+@dataclass
 class MicroagentKnowledge:
     """Represents knowledge from a triggered microagent.
 

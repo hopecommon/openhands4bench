@@ -4,6 +4,7 @@ from openhands.events.event import RecallType
 from openhands.events.observation import (
     CmdOutputMetadata,
     CmdOutputObservation,
+    ContextStrategyObservation,
     FileEditObservation,
     Observation,
     RecallObservation,
@@ -88,6 +89,27 @@ def test_command_output_observation_serialization_deserialization():
         'success': True,
     }
     serialization_deserialization(original_observation_dict, CmdOutputObservation)
+
+
+def test_context_strategy_observation_serialization_deserialization():
+    original_observation_dict = {
+        'observation': 'context_strategy',
+        'message': 'Context strategy condensation applied.',
+        'extras': {
+            'strategy': 'discard_all',
+            'token_count': 2048,
+            'context_limit': 1024,
+            'trigger': 'context_window_limit',
+            'metadata': {
+                'redacted_tool_responses': 12,
+                'discard_ratio': 0.4,
+            },
+        },
+        'content': 'Context strategy condensation applied.',
+    }
+    serialization_deserialization(
+        original_observation_dict, ContextStrategyObservation
+    )
 
 
 def test_success_field_serialization():

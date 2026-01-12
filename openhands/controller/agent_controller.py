@@ -83,6 +83,7 @@ from openhands.events.event import Event
 from openhands.events.observation import (
     AgentDelegateObservation,
     AgentStateChangedObservation,
+    ContextStrategyObservation,
     ErrorObservation,
     NullObservation,
     Observation,
@@ -385,6 +386,11 @@ class AgentController:
                 f'Error while running the agent (session ID: {self.id}): {e}',
                 exc_info=True,
             )
+            if isinstance(e, LLMContextWindowExceedError):
+                self.event_stream.add_event(
+                    ErrorObservation(content=str(e)),
+                    EventSource.AGENT,
+                )
             reported = RuntimeError(
                 f'There was an unexpected error while running the agent: {e.__class__.__name__}. You can refresh the page or ask the agent to try again.'
             )
@@ -526,6 +532,27 @@ class AgentController:
                 )
                 await self.delegate.set_agent_state_to(AgentState.RUNNING)
             return
+
+        elif isinstance(action, CondensationAction):
+            request = next(
+                (
+                    event
+                    for event in reversed(self.state.history)
+                    if isinstance(event, CondensationRequestAction)
+                ),
+                None,
+            )
+            self.event_stream.add_event(
+                ContextStrategyObservation(
+                    content='Context strategy condensation applied.',
+                    strategy=getattr(request, 'context_strategy', None),
+                    token_count=getattr(request, 'token_count', None),
+                    context_limit=getattr(request, 'context_limit', None),
+                    trigger=getattr(request, 'trigger', None),
+                    metadata=action.metadata,
+                ),
+                EventSource.AGENT,
+            )
 
         elif isinstance(action, AgentFinishAction):
             self.state.outputs = action.outputs
