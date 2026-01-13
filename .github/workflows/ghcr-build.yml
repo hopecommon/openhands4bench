@@ -6,12 +6,6 @@ name: Docker
 # Always run on PRs
 # Can also be triggered manually
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "*"
-  pull_request:
   workflow_dispatch:
     inputs:
       reason:
@@ -62,7 +56,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3.7.0
         with:
@@ -100,7 +94,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3.7.0
         with:
@@ -179,7 +173,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       # Set up Docker Buildx for better performance
       - name: Set up Docker Buildx
@@ -272,7 +266,7 @@ jobs:
 
       - name: Get short SHA
         id: short_sha
-        run: echo "SHORT_SHA=$(echo ${{ github.event.pull_request.head.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+        run: echo "SHORT_SHA=$(echo ${{ github.event.pull_request.head.sha || github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
 
       - name: Update PR Description
         env:

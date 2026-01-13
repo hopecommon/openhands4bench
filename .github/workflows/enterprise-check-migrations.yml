@@ -1,9 +1,20 @@
 name: Enterprise Check Migrations
 
 on:
-  pull_request:
-    paths:
-      - 'enterprise/migrations/**'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to comment on"
+        required: true
+        type: number
+      base_ref:
+        description: "Base branch ref (e.g. main)"
+        required: true
+        type: string
+      head_sha:
+        description: "Head SHA to check"
+        required: true
+        type: string
 
 jobs:
   check-sync:
@@ -12,19 +23,19 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ inputs.head_sha }}
           fetch-depth: 0
 
 
       - name: Fetch base branch
-        run: git fetch origin ${{ github.event.pull_request.base.ref }}
+        run: git fetch origin ${{ inputs.base_ref }}
 
       - name: Check if base branch is ancestor of PR
         id: check_up_to_date
         shell: bash
         run: |
-          BASE="origin/${{ github.event.pull_request.base.ref }}"
-          HEAD="${{ github.event.pull_request.head.sha }}"
+          BASE="origin/${{ inputs.base_ref }}"
+          HEAD="${{ inputs.head_sha }}"
           if git merge-base --is-ancestor "$BASE" "$HEAD"; then
             echo "We're up to date with base $BASE"
             exit 0
@@ -37,7 +48,7 @@ jobs:
         uses: peter-evans/find-comment@v3
         id: find-comment
         with:
-          issue-number: ${{ github.event.pull_request.number }}
+          issue-number: ${{ inputs.pr_number }}
           comment-author: 'github-actions[bot]'
           body-includes: |
             ⚠️ This PR contains **migrations**
@@ -45,7 +56,7 @@ jobs:
       - name: Comment warning on PR
         uses: peter-evans/create-or-update-comment@v5
         with:
-          issue-number: ${{ github.event.pull_request.number }}
+          issue-number: ${{ inputs.pr_number }}
           comment-id: ${{ steps.find-comment.outputs.comment-id }}
           edit-mode: replace
           body: |

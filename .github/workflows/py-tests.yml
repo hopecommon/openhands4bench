@@ -5,10 +5,7 @@ name: Run Python Tests
 # * Always run on "main"
 # * Always run on PRs
 on:
-  push:
-    branches:
-      - main
-  pull_request:
+  workflow_dispatch:
 
 # If triggered by a PR, it will be in the same group. However, each commit on main will be in its own unique group
 concurrency:

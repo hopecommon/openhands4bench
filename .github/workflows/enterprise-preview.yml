@@ -3,8 +3,12 @@ name: Enterprise Preview
 
 # Run on PRs labeled
 on:
-  pull_request:
-    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to deploy"
+        required: true
+        type: number
 
 # Match ghcr-build.yml, but don't interrupt it.
 concurrency:
@@ -16,7 +20,7 @@ jobs:
   # and also if it's added after the fact. Thus, it exists in both places.
   enterprise-preview:
     name: Enterprise preview
-    if: github.event.label.name == 'deploy'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: blacksmith-4vcpu-ubuntu-2204
     steps:
       # This should match the version in ghcr-build.yml
@@ -25,5 +29,5 @@ jobs:
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}" \
             -H "Accept: application/vnd.github+json" \
-            -d "{\"ref\": \"main\", \"inputs\": {\"openhandsPrNumber\": \"${{ github.event.pull_request.number }}\", \"deployEnvironment\": \"feature\", \"enterpriseImageTag\": \"pr-${{ github.event.pull_request.number }}\" }}" \
+            -d "{\"ref\": \"main\", \"inputs\": {\"openhandsPrNumber\": \"${{ inputs.pr_number }}\", \"deployEnvironment\": \"feature\", \"enterpriseImageTag\": \"pr-${{ inputs.pr_number }}\" }}" \
             https://api.github.com/repos/OpenHands/deploy/actions/workflows/deploy.yaml/dispatches
