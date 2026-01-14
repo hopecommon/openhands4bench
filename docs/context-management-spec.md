@@ -23,7 +23,7 @@
 - ReAct(baseline)：超出设置的上下文限制后直接报错退出，视为失败
 - Discard All：达到设置的上下文限制后触发，会自动去除所有对话历史中的tool response结果
 - Summary：达到设置的上下文限制后触发，由模型进行总结后，去除旧内容，用总结后的内容来代替继续进行指导完成（可能是当前 OpenHands 的默认方式，但也可能需要修改来对齐我们的版本，具体待定）
-- Mem 1：需要查阅具体论文，暂时待定
+- Mem 1：已实现为 Mem1 风格总结（维护累积的 <think> 记忆块）
 - Folding Agent：需要查阅具体论文，暂时待定
 - DynaContext：我们本次重点实现的对象，需要查阅相关具体文档，待定
 - strategy-X：新策略（例如强化裁剪/汇总/检索等）
@@ -52,19 +52,29 @@ CLI 覆盖同名字段；未设置时沿用原有 condenser 逻辑，不改变�
 
 ### 已实现策略映射
 - `react`：`NoOpCondenser` + `enable_history_truncation = false`（上下文超限直接退出或者声明某个error flag可以被捕获）
-- `summary`：`LLMSummarizingCondenser`（LLM 总结替换旧内容）
+- `summary`：`LLMSummarizingCondenser`（LLM 总结替换旧内容；可通过 condenser 参数控制触发条件）
 - `discard_all`：`ToolResponseDiscardCondenser`（在触发 condensation request 时，将工具响应的内容替换为 "omitted"）
+- `mem1`：`Mem1Condenser`（更新 <think> 记忆块并保留少量最近事件）
 
 > 其他策略（`mem1` / `folding` / `dynacontext` / `strategy-x`）为待实现占位，后续补文档与实现。
+
+提示：当 `context_strategy = "summary"` 时，如需覆盖默认阈值或仅在 condensation request 时触发，请通过 `[condenser]` 自定义 `max_size` 与 `trigger_on_max_size`。
 
 ### 使用示例
 - 环境变量：
   - `AGENT_CONTEXT_STRATEGY=summary openhands -t "..."`
+  - `AGENT_CONTEXT_STRATEGY=mem1 openhands -t "..."`
 - config.toml：
   - `[agent]`
   - `context_strategy = "discard_all"`
+  - `context_strategy = "mem1"`
+  - `[condenser]`
+  - `type = "llm"`
+  - `trigger_on_max_size = false`
+  - `max_size = 100`
 - CLI：
   - `openhands --context-strategy react -t "..."`
+  - `openhands --context-strategy mem1 -t "..."`
 
 ### 可追踪性（日志与元数据）
 - Condenser 会在日志中输出策略名、触发点与裁剪统计。

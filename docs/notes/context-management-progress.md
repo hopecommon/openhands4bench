@@ -76,7 +76,26 @@
 
 ### Notes / Open Questions
 - `discard_all` currently redacts tool response content on condensation request; message structure is preserved but content is replaced.
-- `summary` relies on existing condenser thresholds (event-count based, not token-based).
+- `summary` can now be configured to skip event-count triggering and only respond to condensation requests via `trigger_on_max_size = false`.
 
 ### Next Step
 - Validate strategy switching via logs and document final usage details.
+
+## Step 4/5: Mem1 Strategy Integration (2025-02-14)
+
+### Changes Applied
+- Added a Mem1-style condenser that maintains a persistent <think> memory block and keeps a small tail window.
+- Wired the new `mem1` context strategy into config parsing and strategy mapping.
+- Added config/template hints for `mem1` usage.
+
+### Files Touched
+- `openhands/memory/condenser/impl/mem1_condenser.py`
+- `openhands/core/config/condenser_config.py`
+- `openhands/core/config/utils.py`
+- `openhands/memory/condenser/impl/__init__.py`
+- `config.template.toml`
+- `tests/unit/memory/condenser/test_condenser.py`
+
+### Notes / Open Questions
+- Default `keep_last` is tuned for a small rolling window; can be overridden via `[condenser]` if needed.
+- Strategy currently triggers on condensation requests and optional `max_size` threshold.
