@@ -11,6 +11,7 @@ from openhands.core.config.condenser_config import (
     CondenserPipelineConfig,
     LLMAttentionCondenserConfig,
     LLMSummarizingCondenserConfig,
+    Mem1CondenserConfig,
     NoOpCondenserConfig,
     ObservationMaskingCondenserConfig,
     RecentEventsCondenserConfig,
@@ -34,6 +35,7 @@ from openhands.memory.condenser.impl import (
     ImportantEventSelection,
     LLMAttentionCondenser,
     LLMSummarizingCondenser,
+    Mem1Condenser,
     NoOpCondenser,
     ObservationMaskingCondenser,
     RecentEventsCondenser,
@@ -371,6 +373,23 @@ def test_llm_summarizing_condenser_from_config(mock_llm_registry):
     assert condenser.llm.config.api_key.get_secret_value() == 'test_key'
     assert condenser.max_size == 50
     assert condenser.keep_first == 10
+
+
+def test_mem1_condenser_from_config(mock_llm_registry):
+    """Test that Mem1Condenser objects can be made from config."""
+    config = Mem1CondenserConfig(
+        llm_config=LLMConfig(model='gpt-4o', api_key='test_key'),
+        keep_first=1,
+        keep_last=2,
+        max_size=10,
+    )
+    condenser = Condenser.from_config(config, mock_llm_registry)
+
+    assert isinstance(condenser, Mem1Condenser)
+    assert condenser.llm.config.model == 'gpt-4o'
+    assert condenser.keep_first == 1
+    assert condenser.keep_last == 2
+    assert condenser.max_size == 10
 
 
 def test_llm_summarizing_condenser_invalid_config(mock_llm, mock_llm_registry):

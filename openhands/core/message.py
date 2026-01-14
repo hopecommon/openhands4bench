@@ -74,6 +74,10 @@ class Message(BaseModel):
     # force string serializer
     force_string_serializer: bool = False
 
+    # Optional model-provided reasoning content (provider-specific).
+    # This is intended for recording/debugging only and is NOT sent to the LLM.
+    reasoning: str | None = None
+
     @property
     def contains_image(self) -> bool:
         return any(isinstance(content, ImageContent) for content in self.content)

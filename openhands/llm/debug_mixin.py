@@ -42,10 +42,47 @@ class DebugMixin:
         if not logger.isEnabledFor(DEBUG):
             # Don't use memory building message string if not logging.
             return
-        message_back: str = resp['choices'][0]['message']['content'] or ''
-        tool_calls: list[ChatCompletionMessageToolCall] = resp['choices'][0][
-            'message'
-        ].get('tool_calls', [])
+        msg = resp['choices'][0].get('message', {})
+
+        reasoning_back = ''
+        if isinstance(msg, dict):
+            reasoning_back = (
+                msg.get('reasoning_content')
+                or msg.get('reasoning')
+                or msg.get('thinking')
+                or msg.get('thought')
+                or ''
+            )
+        else:
+            # LiteLLM may return a Message-like object
+            for attr in ('reasoning_content', 'reasoning', 'thinking', 'thought'):
+                try:
+                    val = getattr(msg, attr, None)
+                except Exception:
+                    val = None
+                if isinstance(val, str) and val.strip():
+                    reasoning_back = val
+                    break
+
+        content_back = ''
+        if isinstance(msg, dict):
+            content_back = msg.get('content') or ''
+        else:
+            try:
+                content_back = getattr(msg, 'content', '') or ''
+            except Exception:
+                content_back = ''
+
+        message_back: str = ''
+        if reasoning_back:
+            message_back += f'[reasoning]\n{reasoning_back}\n'
+        message_back += content_back
+
+        tool_calls: list[ChatCompletionMessageToolCall] = []
+        if isinstance(msg, dict):
+            tool_calls = msg.get('tool_calls', [])
+        else:
+            tool_calls = getattr(msg, 'tool_calls', []) or []
         if tool_calls:
             for tool_call in tool_calls:
                 fn_name = tool_call.function.name

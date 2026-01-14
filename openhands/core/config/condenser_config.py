@@ -84,6 +84,40 @@ class LLMSummarizingCondenserConfig(BaseModel):
         description='Maximum size of the condensed history before triggering forgetting.',
         ge=2,
     )
+    trigger_on_max_size: bool = Field(
+        default=True,
+        description='Whether to trigger summarization when max_size is exceeded.',
+    )
+    max_event_length: int = Field(
+        default=10_000,
+        description='Maximum length of the event representations to be passed to the LLM.',
+    )
+
+    model_config = ConfigDict(extra='forbid')
+
+
+class Mem1CondenserConfig(BaseModel):
+    """Configuration for Mem1Condenser."""
+
+    type: Literal['mem1'] = Field(default='mem1')
+    llm_config: LLMConfig = Field(
+        ..., description='Configuration for the LLM to use for memory updates.'
+    )
+    keep_first: int = Field(
+        default=1,
+        description='Number of initial events to always keep in history.',
+        ge=0,
+    )
+    keep_last: int = Field(
+        default=4,
+        description='Number of most recent events to keep alongside memory.',
+        ge=0,
+    )
+    max_size: int | None = Field(
+        default=None,
+        description='Optional max size before triggering condensation.',
+        ge=1,
+    )
     max_event_length: int = Field(
         default=10_000,
         description='Maximum length of the event representations to be passed to the LLM.',
@@ -200,6 +234,7 @@ CondenserConfig = (
     | BrowserOutputCondenserConfig
     | RecentEventsCondenserConfig
     | LLMSummarizingCondenserConfig
+    | Mem1CondenserConfig
     | AmortizedForgettingCondenserConfig
     | LLMAttentionCondenserConfig
     | StructuredSummaryCondenserConfig
@@ -244,7 +279,7 @@ def condenser_config_from_toml_section(
 
         # Handle LLM config reference if needed
         if (
-            condenser_type in ('llm', 'llm_attention')
+            condenser_type in ('llm', 'llm_attention', 'mem1')
             and 'llm_config' in data
             and isinstance(data['llm_config'], str)
         ):
@@ -303,6 +338,7 @@ def create_condenser_config(condenser_type: str, data: dict) -> CondenserConfig:
         'observation_masking': ObservationMaskingCondenserConfig,
         'recent': RecentEventsCondenserConfig,
         'llm': LLMSummarizingCondenserConfig,
+        'mem1': Mem1CondenserConfig,
         'amortized': AmortizedForgettingCondenserConfig,
         'llm_attention': LLMAttentionCondenserConfig,
         'structured': StructuredSummaryCondenserConfig,

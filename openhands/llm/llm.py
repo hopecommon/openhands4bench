@@ -7,8 +7,10 @@
 # Tag: Legacy-V0
 # V1 replacement for this module lives in the Software Agent SDK.
 import copy
+import datetime
 import os
 import time
+import uuid
 import warnings
 from functools import partial
 from typing import Any, Callable, cast
@@ -277,6 +279,31 @@ class LLM(RetryMixin, DebugMixin):
 
             kwargs['messages'] = messages
 
+            capture_raw_response = os.environ.get(
+                'OPENHANDS_CAPTURE_RAW_RESPONSE', ''
+            ).strip().lower() in ('1', 'true', 'yes')
+            preserve_reasoning_field = os.environ.get(
+                'OPENHANDS_PRESERVE_REASONING_FIELD', 'true'
+            ).strip().lower() not in ('0', 'false', 'no')
+            litellm_logging_obj = None
+            if capture_raw_response or preserve_reasoning_field:
+                from litellm.litellm_core_utils.cached_imports import (
+                    get_litellm_logging_class,
+                )
+
+                Logging = get_litellm_logging_class()
+                litellm_logging_obj = Logging(
+                    model=self.config.model,
+                    messages=messages,
+                    stream=bool(kwargs.get('stream', False)),
+                    call_type='completion',
+                    litellm_call_id=str(uuid.uuid4()),
+                    start_time=datetime.datetime.now(),
+                    function_id=str(uuid.uuid4()),
+                    log_raw_request_response=(capture_raw_response or preserve_reasoning_field),
+                )
+                kwargs['litellm_logging_obj'] = litellm_logging_obj
+
             # handle conversion of to non-function calling messages if needed
             original_fncall_messages = copy.deepcopy(messages)
             mock_fncall_tools = None
@@ -322,6 +349,67 @@ class LLM(RetryMixin, DebugMixin):
             # log the entire LLM prompt
             self.log_prompt(messages)
 
+            dump_request = os.environ.get(
+                'OPENHANDS_DUMP_REQUEST', ''
+            ).strip().lower() in ('1', 'true', 'yes')
+            if dump_request:
+                try:
+                    import json as std_json
+
+                    def _dump_safe(value: Any) -> Any:
+                        if value is None or isinstance(
+                            value, (str, int, float, bool)
+                        ):
+                            return value
+                        if isinstance(value, dict):
+                            return {k: _dump_safe(v) for k, v in value.items()}
+                        if isinstance(value, (list, tuple)):
+                            return [_dump_safe(v) for v in value]
+                        if hasattr(value, 'model_dump'):
+                            return _dump_safe(value.model_dump())
+                        if hasattr(value, 'dict'):
+                            return _dump_safe(value.dict())
+                        return repr(value)
+
+                    request_payload = {
+                        'model': _dump_safe(kwargs.get('model', self.config.model)),
+                        'messages': _dump_safe(messages),
+                        'tools': _dump_safe(kwargs.get('tools')),
+                        'tool_choice': _dump_safe(kwargs.get('tool_choice')),
+                        'stream': _dump_safe(kwargs.get('stream', False)),
+                        'temperature': _dump_safe(kwargs.get('temperature')),
+                        'top_p': _dump_safe(kwargs.get('top_p')),
+                        'max_tokens': _dump_safe(kwargs.get('max_tokens')),
+                        'extra_body': _dump_safe(kwargs.get('extra_body')),
+                        'base_url': _dump_safe(self.config.base_url),
+                    }
+                    dump_dir = os.environ.get(
+                        'OPENHANDS_DUMP_REQUEST_DIR', '/workspace/trajectories'
+                    )
+                    os.makedirs(dump_dir, exist_ok=True)
+                    dump_path = os.path.join(
+                        dump_dir, f'openhands_request_{uuid.uuid4().hex}.json'
+                    )
+                    with open(dump_path, 'w', encoding='utf-8') as f:
+                        std_json.dump(request_payload, f, ensure_ascii=False, indent=2)
+                except Exception as exc:
+                    try:
+                        import json as std_json
+
+                        dump_dir = os.environ.get(
+                            'OPENHANDS_DUMP_REQUEST_DIR', '/workspace/trajectories'
+                        )
+                        os.makedirs(dump_dir, exist_ok=True)
+                        dump_path = os.path.join(
+                            dump_dir, f'openhands_request_error_{uuid.uuid4().hex}.json'
+                        )
+                        with open(dump_path, 'w', encoding='utf-8') as f:
+                            std_json.dump(
+                                {'error': repr(exc)}, f, ensure_ascii=False, indent=2
+                            )
+                    except Exception:
+                        pass
+
             # set litellm modify_params to the configured value
             # True by default to allow litellm to do transformations like adding a default message, when a message is empty
             # NOTE: this setting is global; unlike drop_params, it cannot be overridden in the litellm completion partial
@@ -348,6 +436,66 @@ class LLM(RetryMixin, DebugMixin):
                     category=DeprecationWarning,
                 )
                 resp: ModelResponse = self._completion_unwrapped(*args, **kwargs)
+
+            if litellm_logging_obj is not None:
+                original_response = litellm_logging_obj.model_call_details.get(
+                    'original_response'
+                )
+                raw_response = original_response
+                if isinstance(original_response, str):
+                    try:
+                        raw_response = json.loads(original_response)
+                    except Exception:
+                        raw_response = original_response
+                if raw_response is not None and capture_raw_response:
+                    resp.original_response = raw_response
+
+                if preserve_reasoning_field and isinstance(raw_response, dict):
+                    try:
+                        raw_message = raw_response.get('choices', [{}])[0].get(
+                            'message', {}
+                        )
+                    except Exception:
+                        raw_message = {}
+                    if (
+                        isinstance(raw_message, dict)
+                        and 'reasoning_content' in raw_message
+                    ):
+                        # Only act when the raw field key exists at all.
+                        # Normalize null -> "" to preserve presence.
+                        raw_reasoning = raw_message.get('reasoning_content')
+                        reasoning_value = '' if raw_reasoning is None else raw_reasoning
+
+                        msg = resp.choices[0].message
+                        current_reasoning = getattr(msg, 'reasoning_content', None)
+
+                        # Raw is authoritative when present, but avoid overwriting a
+                        # non-empty value with an empty one.
+                        should_set = False
+                        if current_reasoning is None:
+                            should_set = True
+                        elif isinstance(current_reasoning, str) and current_reasoning == '':
+                            should_set = True
+                        elif reasoning_value != '' and current_reasoning != reasoning_value:
+                            should_set = True
+
+                        if should_set:
+                            try:
+                                msg.reasoning_content = reasoning_value
+                            except Exception:
+                                pass
+
+                        # Mirror into provider_specific_fields for stable serialization.
+                        if hasattr(msg, 'provider_specific_fields'):
+                            psf = msg.provider_specific_fields or {}
+                            if (
+                                'reasoning_content' not in psf
+                                or psf.get('reasoning_content') in (None, '')
+                            ):
+                                psf['reasoning_content'] = getattr(
+                                    msg, 'reasoning_content', None
+                                )
+                            msg.provider_specific_fields = psf
 
             # Calculate and record latency
             latency = time.time() - start_time

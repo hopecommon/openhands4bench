@@ -203,17 +203,47 @@ class StructuredSummaryCondenser(RollingCondenser):
         # prefix events from the head, minus one for the summarization event
         events_from_tail = target_size - len(head) - 1
 
-        summary_event = (
-            view[self.keep_first]
-            if isinstance(view[self.keep_first], AgentCondensationObservation)
-            else AgentCondensationObservation('No events summarized')
-        )
+        summary_event = AgentCondensationObservation('No events summarized')
+        if len(view) > self.keep_first and isinstance(
+            view[self.keep_first], AgentCondensationObservation
+        ):
+            summary_event = view[self.keep_first]
 
         # Identify events to be forgotten (those not in head or tail)
-        forgotten_events = []
-        for event in view[self.keep_first : -events_from_tail]:
-            if not isinstance(event, AgentCondensationObservation):
-                forgotten_events.append(event)
+        tail_stop = -events_from_tail if events_from_tail > 0 else None
+
+        forgotten_events = [
+            event
+            for event in view[self.keep_first : tail_stop]
+            if not isinstance(event, AgentCondensationObservation)
+        ]
+
+        # If condensation is requested due to token limits, the view may still be
+        # small in event count (e.g., one huge tool output). Fall back to forgetting
+        # the single largest event to ensure the request can be handled.
+        if not forgotten_events and view.unhandled_condensation_request:
+            candidates = [
+                event
+                for event in view[self.keep_first :]
+                if not isinstance(event, AgentCondensationObservation)
+            ]
+            if candidates:
+                forgotten_events = [max(candidates, key=lambda e: len(str(e)))]
+
+        # Nothing to forget (e.g., only system prompt). Return a no-op condensation
+        # to mark the request as handled rather than raising.
+        if not forgotten_events:
+            return Condensation(
+                action=CondensationAction(
+                    forgotten_event_ids=[],
+                    summary=None,
+                    summary_offset=None,
+                    metadata={
+                        'strategy': 'structured',
+                        'note': 'no_forgotten_events',
+                    },
+                )
+            )
 
         # Construct prompt for summarization
         prompt = """You are maintaining a context-aware state summary for an interactive software agent. This summary is critical because it:

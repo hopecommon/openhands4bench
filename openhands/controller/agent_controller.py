@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import os
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -38,6 +40,7 @@ from openhands.controller.state.state import State
 from openhands.controller.state.state_tracker import StateTracker
 from openhands.controller.stuck import StuckDetector
 from openhands.core.config import AgentConfig, LLMConfig
+from openhands.core.config.condenser_config import ToolResponseDiscardCondenserConfig
 from openhands.core.exceptions import (
     AgentStuckInLoopError,
     FunctionCallNotExistsError,
@@ -94,6 +97,11 @@ from openhands.llm.metrics import Metrics
 from openhands.runtime.runtime_status import RuntimeStatus
 from openhands.server.services.conversation_stats import ConversationStats
 from openhands.storage.files import FileStore
+from openhands.storage.locations import (
+    get_conversation_context_snapshot_filename,
+    get_conversation_system_prompt_filename,
+)
+from openhands.utils.context_snapshot import CONTEXT_SNAPSHOT_PENDING_KEY
 
 # note: RESUME is only available on web GUI
 TRAFFIC_CONTROL_REMINDER = (
@@ -277,6 +285,55 @@ class AgentController:
             logger.debug(f'System message: {preview}')
             self.event_stream.add_event(system_message, EventSource.AGENT)
 
+    def _is_discard_all_strategy(self) -> bool:
+        strategy = self.agent.config.context_strategy
+        if strategy:
+            normalized = strategy.strip().lower().replace('-', '_')
+            if normalized in ('discard_all', 'tool_response_discard'):
+                return True
+        return isinstance(
+            self.agent.config.condenser, ToolResponseDiscardCondenserConfig
+        )
+
+    def _find_last_discard_all_index(self) -> int | None:
+        history = self.state.history
+        for index in range(len(history) - 1, -1, -1):
+            event = history[index]
+            if isinstance(event, CondensationAction):
+                metadata = event.metadata or {}
+                strategy = str(metadata.get('strategy', '')).strip().lower()
+                if strategy in ('discard_all', 'tool_response_discard'):
+                    return index
+        return None
+
+    def _has_unredacted_tool_outputs(self, events: list[Event]) -> bool:
+        for event in events:
+            if isinstance(event, Observation) and event.tool_call_metadata is not None:
+                if event.content != 'omitted':
+                    return True
+        return False
+
+    def _get_discard_all_abort_metadata(self) -> dict | None:
+        if not self._is_discard_all_strategy():
+            return None
+        discard_index = self._find_last_discard_all_index()
+        if discard_index is None:
+            return None
+        if self._has_unredacted_tool_outputs(self.state.history[discard_index + 1 :]):
+            return None
+        discard_event = self.state.history[discard_index]
+        discard_metadata = (
+            discard_event.metadata if isinstance(discard_event, CondensationAction) else {}
+        )
+        return {
+            'reason': 'discard_all_no_new_tool_outputs',
+            'discard_all_event_id': discard_event.id,
+            'discard_all_metadata': discard_metadata,
+        }
+
+    def _should_abort_discard_all(self) -> bool:
+        return self._get_discard_all_abort_metadata() is not None
+
     async def close(self, set_stop_state: bool = True) -> None:
         """Closes the agent controller, canceling any ongoing tasks and unsubscribing from the event stream.
 
@@ -387,6 +444,17 @@ class AgentController:
                 exc_info=True,
             )
             if isinstance(e, LLMContextWindowExceedError):
+                abort_metadata = self._get_discard_all_abort_metadata()
+                if abort_metadata is not None:
+                    self.event_stream.add_event(
+                        ContextStrategyObservation(
+                            content='Context strategy termination applied.',
+                            strategy='discard_all',
+                            trigger='discard_all_no_new_tool_outputs',
+                            metadata=abort_metadata,
+                        ),
+                        EventSource.AGENT,
+                    )
                 self.event_stream.add_event(
                     ErrorObservation(content=str(e)),
                     EventSource.AGENT,
@@ -542,13 +610,22 @@ class AgentController:
                 ),
                 None,
             )
+            strategy = getattr(request, 'context_strategy', None)
+            token_count = getattr(request, 'token_count', None)
+            context_limit = getattr(request, 'context_limit', None)
+            trigger = getattr(request, 'trigger', None)
+            if action.metadata:
+                if strategy is None:
+                    strategy = action.metadata.get('strategy')
+                if trigger is None:
+                    trigger = action.metadata.get('trigger')
             self.event_stream.add_event(
                 ContextStrategyObservation(
                     content='Context strategy condensation applied.',
-                    strategy=getattr(request, 'context_strategy', None),
-                    token_count=getattr(request, 'token_count', None),
-                    context_limit=getattr(request, 'context_limit', None),
-                    trigger=getattr(request, 'trigger', None),
+                    strategy=strategy,
+                    token_count=token_count,
+                    context_limit=context_limit,
+                    trigger=trigger,
                     metadata=action.metadata,
                 ),
                 EventSource.AGENT,
@@ -973,6 +1050,10 @@ class AgentController:
                     or isinstance(e, ContextWindowExceededError)
                 ):
                     if self.agent.config.enable_history_truncation:
+                        if self._should_abort_discard_all():
+                            raise LLMContextWindowExceedError(
+                                'Context window still exceeded after discard_all; terminating.'
+                            )
                         self.event_stream.add_event(
                             CondensationRequestAction(), EventSource.AGENT
                         )
@@ -1054,6 +1135,7 @@ class AgentController:
             self._prepare_metrics_for_frontend(action)
 
             self.event_stream.add_event(action, action._source)  # type: ignore [attr-defined]
+            self._write_context_snapshot(action)
 
         log_level = 'info' if LOG_ALL_EVENTS else 'debug'
         self.log(log_level, str(action), extra={'msg_type': 'ACTION'})
@@ -1247,6 +1329,40 @@ Loop detected at iteration {self.state.iteration_flag.current_value}
             f'{accumulated_usage.completion_tokens}',
             extra={'msg_type': 'METRICS'},
         )
+
+    def _write_context_snapshot(self, action: Action) -> None:
+        if not self.file_store:
+            return
+        snapshot = self.state.extra_data.pop(CONTEXT_SNAPSHOT_PENDING_KEY, None)
+        if not snapshot:
+            return
+
+        snapshot['action_event_id'] = action.id
+        snapshot['action_type'] = type(action).__name__
+        snapshot['saved_at'] = datetime.now().isoformat()
+
+        system_prompt_content = snapshot.pop('system_prompt_content', None)
+        system_prompt_hash = snapshot.get('system_prompt_hash')
+        if system_prompt_content and system_prompt_hash:
+            prompt_path = get_conversation_system_prompt_filename(
+                self.event_stream.sid, system_prompt_hash, self.event_stream.user_id
+            )
+            try:
+                self.file_store.read(prompt_path)
+            except FileNotFoundError:
+                self.file_store.write(prompt_path, system_prompt_content)
+            except Exception as exc:
+                logger.warning(f'Failed to store system prompt snapshot: {exc}')
+
+        snapshot_path = get_conversation_context_snapshot_filename(
+            self.event_stream.sid,
+            int(snapshot.get('snapshot_id', 0)),
+            self.event_stream.user_id,
+        )
+        try:
+            self.file_store.write(snapshot_path, json.dumps(snapshot, indent=2))
+        except Exception as exc:
+            logger.warning(f'Failed to store context snapshot: {exc}')
 
     def __repr__(self) -> str:
         pending_action_info = '<none>'

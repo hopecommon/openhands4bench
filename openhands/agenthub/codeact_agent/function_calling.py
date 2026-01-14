@@ -56,11 +56,109 @@ from openhands.llm.tool_names import TASK_TRACKER_TOOL_NAME
 def combine_thought(action: Action, thought: str) -> Action:
     if not hasattr(action, 'thought'):
         return action
-    if thought and action.thought:
-        action.thought = f'{thought}\n{action.thought}'
-    elif thought:
+    if action.thought:
+        # Keep tool-provided thought intact; reasoning/content stay on the message.
+        return action
+    if thought:
         action.thought = thought
     return action
+
+
+def _extract_text_from_content(content: object) -> str:
+    """Best-effort extraction of display text from an OpenAI-compatible content field."""
+    if content is None:
+        return ''
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get('type') == 'text':
+                parts.append(str(item.get('text', '')))
+            elif isinstance(item, str):
+                parts.append(item)
+        return ''.join(parts)
+    if isinstance(content, dict):
+        # Some providers may return {"type": "text", "text": "..."}
+        if content.get('type') == 'text' and 'text' in content:
+            return str(content.get('text', ''))
+    return str(content)
+
+
+def _extract_reasoning_from_message(message: object) -> tuple[bool, str]:
+    """Extract provider-specific reasoning content.
+
+    Returns:
+        (present, value)
+
+    Where `present` means the provider returned a reasoning field key/attr at all
+    (even if the value is empty or null). This lets us preserve empty strings in
+    trajectories when the field exists but is empty.
+    """
+    if message is None:
+        return False, ''
+
+    # Prefer the explicit OpenAI-compatible name when present.
+    priority_attrs = ('reasoning_content', 'reasoning', 'thinking', 'thought')
+
+    def _normalize(v: object) -> str:
+        if v is None:
+            return ''
+        if isinstance(v, str):
+            return v
+        return str(v)
+
+    # Attribute-style access (LiteLLM Message object)
+    for attr in priority_attrs:
+        try:
+            has_attr = hasattr(message, attr)
+        except Exception:
+            has_attr = False
+        if has_attr:
+            try:
+                value = getattr(message, attr, None)
+            except Exception:
+                value = None
+            return True, _normalize(value)
+
+    # Provider-specific fields (common LiteLLM/OpenAI-compatible extension)
+    try:
+        psf = getattr(message, 'provider_specific_fields', None)
+    except Exception:
+        psf = None
+    if isinstance(psf, dict):
+        if 'reasoning_content' in psf:
+            return True, _normalize(psf.get('reasoning_content'))
+
+    # Mapping-style access (dict-like)
+    if hasattr(message, 'get'):
+        try:
+            for key in priority_attrs:
+                try:
+                    # type: ignore[attr-defined]
+                    has_key = key in message
+                except Exception:
+                    has_key = False
+                if has_key:
+                    # type: ignore[attr-defined]
+                    value = message.get(key)
+                    return True, _normalize(value)
+
+            # Nested provider_specific_fields for dict-like messages
+            try:
+                # type: ignore[attr-defined]
+                has_psf = 'provider_specific_fields' in message
+            except Exception:
+                has_psf = False
+            if has_psf:
+                # type: ignore[attr-defined]
+                psf2 = message.get('provider_specific_fields')
+                if isinstance(psf2, dict) and 'reasoning_content' in psf2:
+                    return True, _normalize(psf2.get('reasoning_content'))
+        except Exception:
+            pass
+
+    return False, ''
 
 
 def set_security_risk(action: Action, arguments: dict) -> None:
@@ -84,15 +182,16 @@ def response_to_actions(
     assert len(response.choices) == 1, 'Only one choice is supported for now'
     choice = response.choices[0]
     assistant_msg = choice.message
+    reasoning_present, reasoning_text = _extract_reasoning_from_message(assistant_msg)
     if hasattr(assistant_msg, 'tool_calls') and assistant_msg.tool_calls:
-        # Check if there's assistant_msg.content. If so, add it to the thought
-        thought = ''
-        if isinstance(assistant_msg.content, str):
-            thought = assistant_msg.content
-        elif isinstance(assistant_msg.content, list):
-            for msg in assistant_msg.content:
-                if msg['type'] == 'text':
-                    thought += msg['text']
+        # Prefer provider-reported reasoning content if present; otherwise fall back to content text.
+        content_text = _extract_text_from_content(getattr(assistant_msg, 'content', None))
+        thought_parts: list[str] = []
+        if reasoning_text:
+            thought_parts.append(reasoning_text)
+        if content_text and content_text != reasoning_text:
+            thought_parts.append(content_text)
+        thought = '\n'.join(thought_parts)
 
         # Process each tool call to OpenHands action
         for i, tool_call in enumerate(assistant_msg.tool_calls):
@@ -327,10 +426,12 @@ def response_to_actions(
             )
             actions.append(action)
     else:
+        content_text = _extract_text_from_content(getattr(assistant_msg, 'content', None))
         actions.append(
             MessageAction(
-                content=str(assistant_msg.content) if assistant_msg.content else '',
+                content=content_text,
                 wait_for_response=True,
+                reasoning=(reasoning_text if reasoning_present else None),
             )
         )
 

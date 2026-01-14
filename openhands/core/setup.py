@@ -267,6 +267,8 @@ def create_controller(
         budget_per_task_delta=config.max_budget_per_task,
         agent_to_llm_config=config.get_agent_to_llm_config_map(),
         event_stream=event_stream,
+        file_store=event_stream.file_store,
+        user_id=event_stream.user_id,
         initial_state=initial_state,
         headless_mode=headless_mode,
         confirmation_mode=config.security.confirmation_mode,

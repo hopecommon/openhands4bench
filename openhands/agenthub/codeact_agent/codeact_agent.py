@@ -6,9 +6,11 @@
 # Unless you are working on deprecation, please avoid extending this legacy file and consult the V1 codepaths above.
 # Tag: Legacy-V0
 # V1 replacement for this module lives in the Software Agent SDK.
+import hashlib
 import os
 import sys
 from collections import deque
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from openhands.llm.llm_registry import LLMRegistry
@@ -38,15 +40,18 @@ from openhands.agenthub.codeact_agent.tools.think import ThinkTool
 from openhands.controller.agent import Agent
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
+from openhands.core.config.condenser_config import ToolResponseDiscardCondenserConfig
 from openhands.core.exceptions import LLMContextWindowExceedError
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.message import Message
 from openhands.events.action import (
     AgentFinishAction,
+    CondensationAction,
     CondensationRequestAction,
     MessageAction,
 )
 from openhands.events.event import Event
+from openhands.events.observation import AgentCondensationObservation, Observation
 from openhands.llm.llm_utils import check_tools
 from openhands.memory.condenser import Condenser
 from openhands.memory.condenser.condenser import Condensation, View
@@ -57,6 +62,11 @@ from openhands.runtime.plugins import (
     PluginRequirement,
 )
 from openhands.utils.prompt import PromptManager
+from openhands.utils.context_snapshot import (
+    CONTEXT_SNAPSHOT_PENDING_KEY,
+    CONTEXT_SNAPSHOT_VERSION,
+    next_snapshot_id,
+)
 
 
 class CodeActAgent(Agent):
@@ -171,6 +181,44 @@ class CodeActAgent(Agent):
         # Only clear pending actions, not LLM metrics
         self.pending_actions.clear()
 
+    @staticmethod
+    def _is_discard_all_config(config: AgentConfig) -> bool:
+        strategy = config.context_strategy
+        if strategy:
+            normalized = strategy.strip().lower().replace('-', '_')
+            if normalized in ('discard_all', 'tool_response_discard'):
+                return True
+        return isinstance(config.condenser, ToolResponseDiscardCondenserConfig)
+
+    @staticmethod
+    def _find_last_discard_all_index(history: list[Event]) -> int | None:
+        for index in range(len(history) - 1, -1, -1):
+            event = history[index]
+            if isinstance(event, CondensationAction):
+                metadata = event.metadata or {}
+                strategy = str(metadata.get('strategy', '')).strip().lower()
+                if strategy in ('discard_all', 'tool_response_discard'):
+                    return index
+        return None
+
+    @staticmethod
+    def _has_unredacted_tool_outputs(events: list[Event]) -> bool:
+        for event in events:
+            if isinstance(event, Observation) and event.tool_call_metadata is not None:
+                if event.content != 'omitted':
+                    return True
+        return False
+
+    def _should_abort_discard_all(self, state: State) -> bool:
+        if not self._is_discard_all_config(self.config):
+            return False
+        discard_index = self._find_last_discard_all_index(state.history)
+        if discard_index is None:
+            return False
+        if self._has_unredacted_tool_outputs(state.history[discard_index + 1 :]):
+            return False
+        return True
+
     def step(self, state: State) -> 'Action':
         """Performs one step using the CodeAct Agent.
 
@@ -225,6 +273,7 @@ class CodeActAgent(Agent):
         messages = self._get_messages(
             condensed_history, initial_user_message, forgotten_event_ids
         )
+        token_count: int | None = None
         context_limit = self.config.context_window_limit_tokens
         if context_limit:
             try:
@@ -239,6 +288,10 @@ class CodeActAgent(Agent):
                         context_limit,
                     )
                     if self.config.enable_history_truncation:
+                        if self._should_abort_discard_all(state):
+                            raise LLMContextWindowExceedError(
+                                f'Context window ({token_count} > {context_limit}) still exceeded after discard_all; terminating.'
+                            )
                         return CondensationRequestAction(
                             context_strategy=self.config.context_strategy,
                             token_count=token_count,
@@ -248,6 +301,16 @@ class CodeActAgent(Agent):
                     raise LLMContextWindowExceedError(
                         f'Conversation exceeds configured context window limit ({token_count} > {context_limit}).'
                     )
+        snapshot: dict | None = None
+        if self.config.save_context_snapshots:
+            snapshot = self._build_context_snapshot(
+                state=state,
+                condensed_history=condensed_history,
+                forgotten_event_ids=forgotten_event_ids,
+                messages=messages,
+                token_count=token_count,
+            )
+
         params: dict = {
             'messages': messages,
         }
@@ -258,6 +321,8 @@ class CodeActAgent(Agent):
             )
         }
         response = self.llm.completion(**params)
+        if snapshot is not None:
+            state.extra_data[CONTEXT_SNAPSHOT_PENDING_KEY] = snapshot
         logger.debug(f'Response from LLM: {response}')
         actions = self.response_to_actions(response)
         logger.debug(f'Actions after response_to_actions: {actions}')
@@ -337,6 +402,121 @@ class CodeActAgent(Agent):
             self.conversation_memory.apply_prompt_caching(messages)
 
         return messages
+
+    def _build_context_snapshot(
+        self,
+        state: State,
+        condensed_history: list[Event],
+        forgotten_event_ids: set[int],
+        messages: list[Message],
+        token_count: int | None,
+    ) -> dict:
+        snapshot_id = next_snapshot_id(state)
+        condensed_event_ids = [
+            event.id for event in condensed_history if event.id != Event.INVALID_ID
+        ]
+        omitted_tool_response_event_ids = [
+            event.id
+            for event in condensed_history
+            if isinstance(event, Observation)
+            and event.tool_call_metadata is not None
+            and event.content == 'omitted'
+            and event.id != Event.INVALID_ID
+        ]
+
+        summary: str | None = None
+        summary_offset: int | None = None
+        condensation_action_id: int | None = None
+        for event in reversed(state.history):
+            if isinstance(event, CondensationAction):
+                condensation_action_id = event.id
+                summary_offset = event.summary_offset
+                if event.summary:
+                    summary = event.summary
+                break
+
+        if summary is None:
+            for event in condensed_history:
+                if isinstance(event, AgentCondensationObservation):
+                    summary = event.content
+                    break
+
+        snapshot: dict = {
+            'version': CONTEXT_SNAPSHOT_VERSION,
+            'snapshot_id': snapshot_id,
+            'created_at': datetime.now().isoformat(),
+            'session_id': state.session_id,
+            'agent': self.name,
+            'context_strategy': self.config.context_strategy,
+            'context_window_limit_tokens': self.config.context_window_limit_tokens,
+            'max_message_chars': self.llm.config.max_message_chars,
+            'vision_is_active': self.llm.vision_is_active(),
+            'condensed_event_ids': condensed_event_ids,
+            'forgotten_event_ids': sorted(forgotten_event_ids),
+            'omitted_tool_response_event_ids': omitted_tool_response_event_ids,
+        }
+
+        if condensation_action_id is not None:
+            snapshot['condensation_action_id'] = condensation_action_id
+        if summary is not None:
+            snapshot['summary'] = summary
+        if summary_offset is not None:
+            snapshot['summary_offset'] = summary_offset
+        if token_count is not None:
+            snapshot['token_count'] = token_count
+
+        if self.config.save_context_prompt:
+            formatted_messages, system_prompt_hash, system_prompt_content = (
+                self._format_snapshot_messages(messages)
+            )
+            snapshot['messages'] = formatted_messages
+            if system_prompt_hash:
+                snapshot['system_prompt_hash'] = system_prompt_hash
+            if system_prompt_content:
+                snapshot['system_prompt_content'] = system_prompt_content
+
+        return snapshot
+
+    def _format_snapshot_messages(
+        self, messages: list[Message]
+    ) -> tuple[list[dict], str | None, str | None]:
+        formatted_messages = self.llm.format_messages_for_llm(messages)
+        system_prompt_hash: str | None = None
+        system_prompt_content: str | None = None
+        for message in formatted_messages:
+            if message.get('role') != 'system':
+                continue
+            content = message.get('content', '')
+            system_prompt_content = self._extract_text_from_content(content)
+            if system_prompt_content:
+                system_prompt_hash = hashlib.sha256(
+                    system_prompt_content.encode('utf-8')
+                ).hexdigest()
+                message['content'] = self._replace_system_prompt_content(
+                    content, system_prompt_hash
+                )
+            break
+        return formatted_messages, system_prompt_hash, system_prompt_content
+
+    def _extract_text_from_content(self, content: object) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    if 'text' in item:
+                        parts.append(str(item.get('text', '')))
+            return '\n'.join(parts)
+        return ''
+
+    def _replace_system_prompt_content(
+        self, content: object, prompt_hash: str
+    ) -> str | list[dict]:
+        placeholder = f'<system_prompt:{prompt_hash}>'
+        if isinstance(content, list):
+            return [{'type': 'text', 'text': placeholder}]
+        return placeholder
 
     def response_to_actions(self, response: 'ModelResponse') -> list['Action']:
         return codeact_function_calling.response_to_actions(

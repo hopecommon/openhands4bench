@@ -70,7 +70,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         '--context-strategy',
         default=None,
         type=str,
-        help='Context strategy override (e.g., react, summary, discard_all).',
+        help='Context strategy override (e.g., react, summary, discard_all, mem1).',
     )
     parser.add_argument(
         '--context-window-limit-tokens',

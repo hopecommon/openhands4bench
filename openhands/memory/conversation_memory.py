@@ -38,6 +38,7 @@ from openhands.events.observation import (
     UserRejectObservation,
 )
 from openhands.events.observation.agent import (
+    ContextStrategyObservation,
     MicroagentKnowledge,
     RecallObservation,
 )
@@ -523,6 +524,12 @@ class ConversationMemory:
             text = truncate_content(obs.content, max_message_chars)
             text += '\n[Error occurred in processing last action]'
             message = Message(role='user', content=[TextContent(text=text)])
+        elif isinstance(obs, ContextStrategyObservation):
+            logger.debug(
+                'Ignoring ContextStrategyObservation in prompt assembly: %s',
+                obs.content,
+            )
+            return []
         elif isinstance(obs, UserRejectObservation):
             text = 'OBSERVATION:\n' + truncate_content(obs.content, max_message_chars)
             text += '\n[Last action has been rejected by the user]'

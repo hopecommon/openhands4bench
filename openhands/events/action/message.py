@@ -9,6 +9,9 @@ from openhands.version import get_version
 @dataclass
 class MessageAction(Action):
     content: str
+    # Optional model-provided reasoning content (e.g. DeepSeek R1, some OpenAI-compatible providers)
+    # This is stored for traceability but is NOT shown as the message text.
+    reasoning: str | None = None
     file_urls: list[str] | None = None
     image_urls: list[str] | None = None
     wait_for_response: bool = False
@@ -31,6 +34,8 @@ class MessageAction(Action):
     def __str__(self) -> str:
         ret = f'**MessageAction** (source={self.source})\n'
         ret += f'CONTENT: {self.content}'
+        if self.reasoning:
+            ret += f'\nREASONING: {self.reasoning}'
         if self.image_urls:
             for url in self.image_urls:
                 ret += f'\nIMAGE_URL: {url}'

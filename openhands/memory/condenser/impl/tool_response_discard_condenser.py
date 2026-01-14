@@ -17,8 +17,14 @@ class ToolResponseDiscardCondenser(RollingCondenser):
 
     def get_condensation(self, view: View) -> Condensation:
         redacted_count = 0
+        already_omitted_count = 0
+        total_tool_responses = 0
         for event in view.events:
             if isinstance(event, Observation) and event.tool_call_metadata is not None:
+                total_tool_responses += 1
+                if event.content == 'omitted':
+                    already_omitted_count += 1
+                    continue
                 event.content = 'omitted'
                 redacted_count += 1
 
@@ -28,12 +34,15 @@ class ToolResponseDiscardCondenser(RollingCondenser):
         self.add_metadata('strategy', 'discard_all')
         self.add_metadata('trigger', 'condensation_request')
         self.add_metadata('total_events', total_events)
+        self.add_metadata('total_tool_responses', total_tool_responses)
         self.add_metadata('redacted_tool_responses', redacted_count)
+        self.add_metadata('already_omitted_tool_responses', already_omitted_count)
         self.add_metadata('discard_ratio', discard_ratio)
 
         logger.info(
-            'ToolResponseDiscardCondenser: redacted %s tool responses out of %s events',
+            'ToolResponseDiscardCondenser: redacted %s tool responses (%s already omitted) out of %s events',
             redacted_count,
+            already_omitted_count,
             total_events,
         )
 
@@ -43,7 +52,9 @@ class ToolResponseDiscardCondenser(RollingCondenser):
                 'strategy': 'discard_all',
                 'trigger': 'condensation_request',
                 'total_events': total_events,
+                'total_tool_responses': total_tool_responses,
                 'redacted_tool_responses': redacted_count,
+                'already_omitted_tool_responses': already_omitted_count,
                 'discard_ratio': discard_ratio,
             },
         )

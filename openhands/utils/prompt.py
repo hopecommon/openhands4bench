@@ -90,6 +90,18 @@ class PromptManager:
         from openhands.agenthub.codeact_agent.tools.prompt import refine_prompt
 
         system_message = self.system_template.render(**context).strip()
+        force_reasoning = os.environ.get(
+            'OPENHANDS_FORCE_REASONING_PROMPT', ''
+        ).strip().lower() in ('1', 'true', 'yes')
+        if force_reasoning:
+            system_message += (
+                "\n\n<REASONING_FIELDS>\n"
+                "* If your provider supports returning a separate reasoning_content "
+                "field, include it in your response.\n"
+                "* If it is not supported, include a brief reasoning summary in the "
+                "normal content.\n"
+                "</REASONING_FIELDS>"
+            )
         return refine_prompt(system_message)
 
     def get_example_user_message(self) -> str:

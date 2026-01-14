@@ -272,7 +272,13 @@ enable_finish = true
 # length limit
 enable_history_truncation = true
 
-# Optional context strategy override (e.g., "react", "summary", "discard_all")
+# Whether to save per-step context snapshots to the file store (V0 only)
+#save_context_snapshots = false
+
+# Whether to include formatted LLM messages in context snapshots
+#save_context_prompt = false
+
+# Optional context strategy override (e.g., "react", "summary", "discard_all", "mem1")
 #context_strategy = "summary"
 
 # Optional max context window (tokens) before applying the strategy
@@ -393,6 +399,7 @@ classpath = "my_package.my_module.MyCustomAgent"
 # - "observation_masking": Keeps full event structure but masks older observations
 # - "recent": Keeps only recent events and discards older ones
 # - "llm": Uses an LLM to summarize conversation history
+# - "mem1": Maintains a persistent <think> memory summary (Mem1-style)
 # - "amortized": Intelligently forgets older events while preserving important context
 # - "llm_attention": Uses an LLM to prioritize most relevant context
 type = "noop"
@@ -422,6 +429,8 @@ type = "noop"
 #keep_first = 1
 # Maximum size of history before triggering summarization
 #max_size = 100
+# Whether to trigger summarization on max_size (set false to only condense on requests)
+#trigger_on_max_size = true
 
 # 5. Amortized Forgetting Condenser
 #type = "amortized"
@@ -430,7 +439,18 @@ type = "noop"
 # Maximum size of history before triggering forgetting
 #max_size = 100
 
-# 6. LLM Attention Condenser
+# 6. Mem1 Condenser
+#type = "mem1"
+# Reference to an LLM config to use for memory updates
+#llm_config = "condenser"
+# Number of initial events to always keep (typically includes task description)
+#keep_first = 1
+# Number of most recent events to keep alongside memory
+#keep_last = 4
+# Optional max size of history before triggering memory updates
+#max_size = 40
+
+# 7. LLM Attention Condenser
 #type = "llm_attention"
 # Reference to an LLM config to use for attention scoring
 #llm_config = "condenser"

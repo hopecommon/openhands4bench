@@ -25,6 +25,7 @@ from openhands.core.config.arg_utils import get_headless_parser
 from openhands.core.config.condenser_config import (
     CondenserConfig,
     LLMSummarizingCondenserConfig,
+    Mem1CondenserConfig,
     NoOpCondenserConfig,
     ToolResponseDiscardCondenserConfig,
     condenser_config_from_toml_section,
@@ -420,13 +421,24 @@ def apply_context_strategy(
             agent_config.condenser = NoOpCondenserConfig()
             agent_config.enable_history_truncation = False
         elif strategy in ('summary', 'summarize'):
-            agent_config.condenser = LLMSummarizingCondenserConfig(
-                llm_config=llm_config,
-                type='llm',
-            )
+            if isinstance(agent_config.condenser, LLMSummarizingCondenserConfig):
+                agent_config.condenser = agent_config.condenser.model_copy(
+                    update={'llm_config': llm_config, 'type': 'llm'}
+                )
+            else:
+                agent_config.condenser = LLMSummarizingCondenserConfig(
+                    llm_config=llm_config,
+                    type='llm',
+                )
             agent_config.enable_history_truncation = True
         elif strategy in ('discard_all', 'tool_response_discard'):
             agent_config.condenser = ToolResponseDiscardCondenserConfig()
+            agent_config.enable_history_truncation = True
+        elif strategy == 'mem1':
+            agent_config.condenser = Mem1CondenserConfig(
+                llm_config=llm_config,
+                type='mem1',
+            )
             agent_config.enable_history_truncation = True
         else:
             logger.openhands_logger.warning(

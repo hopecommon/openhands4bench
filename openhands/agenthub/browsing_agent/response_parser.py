@@ -26,11 +26,35 @@ class BrowsingResponseParser(ResponseParser):
     def parse(
         self, response: str | dict[str, list[dict[str, dict[str, str | None]]]]
     ) -> Action:
+        reasoning_text = ''
         if isinstance(response, str):
             action_str = response
         else:
+            # Best-effort extraction of provider-specific reasoning content
+            try:
+                msg = response['choices'][0].get('message', {})  # type: ignore[union-attr]
+            except Exception:
+                msg = {}
+            if isinstance(msg, dict):
+                reasoning_text = (
+                    msg.get('reasoning_content')
+                    or msg.get('reasoning')
+                    or msg.get('thinking')
+                    or msg.get('thought')
+                    or ''
+                )
+
             action_str = self.parse_response(response)
-        return self.parse_action(action_str)
+
+        action = self.parse_action(action_str)
+        # Store reasoning for traceability without changing the executable action string.
+        if reasoning_text and hasattr(action, 'thought'):
+            existing_thought = getattr(action, 'thought', '')
+            if existing_thought:
+                setattr(action, 'thought', f'{reasoning_text}\n{existing_thought}')
+            else:
+                setattr(action, 'thought', reasoning_text)
+        return action
 
     def parse_response(
         self, response: dict[str, list[dict[str, dict[str, str | None]]]]

@@ -29,6 +29,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         max_size: int = 100,
         keep_first: int = 1,
         max_event_length: int = 10_000,
+        trigger_on_max_size: bool = True,
     ):
         if keep_first >= max_size // 2:
             raise ValueError(
@@ -42,6 +43,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         self.max_size = max_size
         self.keep_first = keep_first
         self.max_event_length = max_event_length
+        self.trigger_on_max_size = trigger_on_max_size
         self.llm = llm
 
         super().__init__()
@@ -57,17 +59,62 @@ class LLMSummarizingCondenser(RollingCondenser):
         # prefix events from the head, minus one for the summarization event
         events_from_tail = target_size - len(head) - 1
 
-        summary_event = (
-            view[self.keep_first]
-            if isinstance(view[self.keep_first], AgentCondensationObservation)
-            else AgentCondensationObservation('No events summarized')
-        )
+        summary_event = AgentCondensationObservation('No events summarized')
+        if len(view) > self.keep_first and isinstance(
+            view[self.keep_first], AgentCondensationObservation
+        ):
+            summary_event = view[self.keep_first]
 
         # Identify events to be forgotten (those not in head or tail)
-        forgotten_events = []
-        for event in view[self.keep_first : -events_from_tail]:
-            if not isinstance(event, AgentCondensationObservation):
-                forgotten_events.append(event)
+        tail_stop = -events_from_tail if events_from_tail > 0 else None
+
+        forgotten_events = [
+            event
+            for event in view[self.keep_first : tail_stop]
+            if not isinstance(event, AgentCondensationObservation)
+        ]
+
+        # When condensation is requested (typically due to token limits), the view
+        # can still be "small" in terms of event count (e.g., a single huge tool
+        # output). In that case the size-based slice above can yield no events to
+        # forget. We must still handle the request and attempt to reduce context.
+        if not forgotten_events and view.unhandled_condensation_request:
+            candidates = [
+                event
+                for event in view[self.keep_first :]
+                if not isinstance(event, AgentCondensationObservation)
+            ]
+            if candidates:
+                forgotten_events = [max(candidates, key=lambda e: len(str(e)))]
+
+        # If there is still nothing to forget (e.g., only a system prompt), handle
+        # the request with a no-op condensation instead of raising.
+        if not forgotten_events:
+            trigger = (
+                'condensation_request'
+                if view.unhandled_condensation_request
+                else 'max_size'
+            )
+            self.add_metadata('strategy', 'summary')
+            self.add_metadata('trigger', trigger)
+            self.add_metadata('forgotten_event_count', 0)
+            self.add_metadata('discard_ratio', 0.0)
+
+            return Condensation(
+                action=CondensationAction(
+                    forgotten_event_ids=[],
+                    summary=None,
+                    summary_offset=None,
+                    metadata={
+                        'strategy': 'summary',
+                        'trigger': trigger,
+                        'summary_length': 0,
+                        'forgotten_event_count': 0,
+                        'discard_ratio': 0.0,
+                        'note': 'no_forgotten_events',
+                    },
+                )
+            )
 
         # Construct prompt for summarization
         prompt = """You are maintaining a context-aware state summary for an interactive agent.
@@ -150,9 +197,16 @@ CURRENT_STATE: Last flip: Heads, Haiku count: 15/20"""
         discard_ratio = (
             (len(forgotten_events) / total_events) if total_events else 0.0
         )
+        trigger = (
+            'condensation_request'
+            if view.unhandled_condensation_request
+            else 'max_size'
+        )
 
         self.add_metadata('response', response.model_dump())
         self.add_metadata('metrics', self.llm.metrics.get())
+        self.add_metadata('strategy', 'summary')
+        self.add_metadata('trigger', trigger)
         self.add_metadata('summary_length', len(summary))
         self.add_metadata('forgotten_event_count', len(forgotten_events))
         self.add_metadata('discard_ratio', discard_ratio)
@@ -175,7 +229,7 @@ CURRENT_STATE: Last flip: Heads, Haiku count: 15/20"""
                 summary_offset=self.keep_first,
                 metadata={
                     'strategy': 'summary',
-                    'trigger': 'condensation_request',
+                    'trigger': trigger,
                     'summary_length': len(summary),
                     'forgotten_event_count': len(forgotten_events),
                     'discard_ratio': discard_ratio,
@@ -184,7 +238,11 @@ CURRENT_STATE: Last flip: Heads, Haiku count: 15/20"""
         )
 
     def should_condense(self, view: View) -> bool:
-        return len(view) > self.max_size or view.unhandled_condensation_request
+        if view.unhandled_condensation_request:
+            return True
+        if not self.trigger_on_max_size:
+            return False
+        return len(view) > self.max_size
 
     @classmethod
     def from_config(
@@ -202,6 +260,7 @@ CURRENT_STATE: Last flip: Heads, Haiku count: 15/20"""
             max_size=config.max_size,
             keep_first=config.keep_first,
             max_event_length=config.max_event_length,
+            trigger_on_max_size=config.trigger_on_max_size,
         )
 
 

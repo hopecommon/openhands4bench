@@ -919,9 +919,12 @@ def convert_non_fncall_messages_to_fncall_messages(
                         f'Unexpected content type {type(content)}. Expected str or list. Content: {content}'
                     )
 
-                converted_messages.append(
-                    {'role': 'assistant', 'content': content, 'tool_calls': [tool_call]}
-                )
+                converted_message = dict(message)
+                converted_message['role'] = 'assistant'
+                converted_message['content'] = content
+                converted_message['tool_calls'] = [tool_call]
+                converted_message.pop('function_call', None)
+                converted_messages.append(converted_message)
             else:
                 # No function call, keep message as is
                 converted_messages.append(message)

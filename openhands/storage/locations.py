@@ -40,3 +40,27 @@ def get_conversation_stats_filename(sid: str, user_id: str | None = None) -> str
 
 def get_experiment_config_filename(sid: str, user_id: str | None = None) -> str:
     return f'{get_conversation_dir(sid, user_id)}exp_config.json'
+
+
+def get_conversation_context_snapshots_dir(
+    sid: str, user_id: str | None = None
+) -> str:
+    return f'{get_conversation_dir(sid, user_id)}context_snapshots/'
+
+
+def get_conversation_context_snapshot_filename(
+    sid: str, snapshot_id: int, user_id: str | None = None
+) -> str:
+    return (
+        f'{get_conversation_context_snapshots_dir(sid, user_id)}'
+        f'snapshot_{snapshot_id:06d}.json'
+    )
+
+
+def get_conversation_system_prompt_filename(
+    sid: str, prompt_hash: str, user_id: str | None = None
+) -> str:
+    return (
+        f'{get_conversation_context_snapshots_dir(sid, user_id)}'
+        f'system_prompt_{prompt_hash}.txt'
+    )
