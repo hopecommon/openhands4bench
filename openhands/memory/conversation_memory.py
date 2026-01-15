@@ -1,4 +1,4 @@
-from typing import Generator
+from typing import Any, Generator
 
 from litellm import ModelResponse
 
@@ -228,6 +228,22 @@ class ConversationMemory:
             rather than being returned immediately. They will be processed later when all corresponding
             tool call results are available.
         """
+
+        def _extract_reasoning(assistant_msg: Any) -> str | None:
+            # Different providers/LiteLLM adapters may expose reasoning in different places.
+            candidates: list[Any] = [
+                getattr(assistant_msg, 'reasoning_content', None),
+                getattr(assistant_msg, 'reasoning', None),
+            ]
+            provider_fields = getattr(assistant_msg, 'provider_specific_fields', None)
+            if isinstance(provider_fields, dict):
+                candidates.append(provider_fields.get('reasoning_content'))
+                candidates.append(provider_fields.get('reasoning'))
+            for value in candidates:
+                if isinstance(value, str) and value.strip():
+                    return value
+            return None
+
         # create a regular message from an event
         if isinstance(
             action,
@@ -276,6 +292,7 @@ class ConversationMemory:
                 if assistant_msg.content and assistant_msg.content.strip()
                 else [],
                 tool_calls=assistant_msg.tool_calls,
+                reasoning=_extract_reasoning(assistant_msg),
             )
             return []
         elif isinstance(action, AgentFinishAction):
@@ -292,6 +309,8 @@ class ConversationMemory:
                 )
                 content = assistant_msg.content or ''
 
+                reasoning = _extract_reasoning(assistant_msg)
+
                 # save content if any, to thought
                 if action.thought:
                     if action.thought != content:
@@ -307,6 +326,7 @@ class ConversationMemory:
                 Message(
                     role=role,  # type: ignore[arg-type]
                     content=[TextContent(text=action.thought)],
+                    reasoning=reasoning if role == 'assistant' else None,
                 )
             ]
         elif isinstance(action, MessageAction):

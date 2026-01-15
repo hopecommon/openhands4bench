@@ -34,6 +34,11 @@ def get_conversation_llm_registry_filename(sid: str, user_id: str | None = None)
     return f'{get_conversation_dir(sid, user_id)}llm_registry.json'
 
 
+def get_conversation_llm_messages_filename(sid: str, user_id: str | None = None) -> str:
+    """Session-level LLM messages transcript in the benchmark results-format."""
+    return f'{get_conversation_dir(sid, user_id)}llm_messages.json'
+
+
 def get_conversation_stats_filename(sid: str, user_id: str | None = None) -> str:
     return f'{get_conversation_dir(sid, user_id)}conversation_stats.pkl'
 

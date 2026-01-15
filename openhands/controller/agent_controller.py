@@ -99,9 +99,11 @@ from openhands.server.services.conversation_stats import ConversationStats
 from openhands.storage.files import FileStore
 from openhands.storage.locations import (
     get_conversation_context_snapshot_filename,
+    get_conversation_llm_messages_filename,
     get_conversation_system_prompt_filename,
 )
 from openhands.utils.context_snapshot import CONTEXT_SNAPSHOT_PENDING_KEY
+from openhands.utils.result_messages import messages_to_results_format
 
 # note: RESUME is only available on web GUI
 TRAFFIC_CONTROL_REMINDER = (
@@ -341,6 +343,36 @@ class AgentController:
         """
         if set_stop_state:
             await self.set_agent_state_to(AgentState.STOPPED)
+
+        # Dump a session-level messages transcript in the benchmark results-format.
+        # This is used for offline reconstruction and MUST be stable across runs.
+        try:
+            save_messages = os.environ.get('OPENHANDS_SAVE_LLM_MESSAGES', '1').strip().lower()
+            if (
+                save_messages not in ('0', 'false', 'no')
+                and not self.is_delegate
+                and self.file_store is not None
+            ):
+                initial_user = self.get_first_user_message(events=self.state.history)
+                conversation_memory = getattr(self.agent, 'conversation_memory', None)
+                llm = getattr(self.agent, 'llm', None)
+                if initial_user is not None and conversation_memory is not None and llm is not None:
+                    messages = conversation_memory.process_events(
+                        condensed_history=list(self.state.history),
+                        initial_user_action=initial_user,
+                        forgotten_event_ids=set(),
+                        max_message_chars=getattr(llm.config, 'max_message_chars', None),
+                        vision_is_active=bool(getattr(llm, 'vision_is_active', lambda: False)()),
+                    )
+                    payload = {'messages': messages_to_results_format(messages)}
+                    path = get_conversation_llm_messages_filename(self.id, self.user_id)
+                    self.file_store.write(
+                        path,
+                        json.dumps(payload, ensure_ascii=False, indent=2),
+                    )
+        except Exception as e:
+            # Never fail close() due to optional debug/export.
+            logger.warning(f'Failed to dump llm_messages.json: {e}')
 
         self.state_tracker.close(self.event_stream)
 
@@ -688,7 +720,8 @@ class AgentController:
             )
 
             # if this is the first user message for this agent, matters for the microagent info type
-            first_user_message = self._first_user_message()
+            events = self.event_stream.get_events()
+            first_user_message = self._first_user_message(events)
             is_first_user_message = (
                 action.id == first_user_message.id if first_user_message else False
             )
@@ -1395,52 +1428,17 @@ Loop detected at iteration {self.state.iteration_flag.current_value}
                 return result
         return False
 
-    def _first_user_message(
-        self, events: list[Event] | None = None
-    ) -> MessageAction | None:
-        """Get the first user message for this agent.
+    def _first_user_message(self, events: list[Event]) -> MessageAction | None:
+        for event in events:
+            if isinstance(event, MessageAction) and event.source == EventSource.USER:
+                return event
+        return None
 
-        For regular agents, this is the first user message from the beginning (start_id=0).
-        For delegate agents, this is the first user message after the delegate's start_id.
+    def get_first_user_message(self, events: list[Event]) -> MessageAction | None:
+        """Public wrapper for _first_user_message, used by message logging."""
+        return self._first_user_message(events)
 
-        Args:
-            events: Optional list of events to search through. If None, uses the event stream.
-
-        Returns:
-            MessageAction | None: The first user message, or None if no user message found
-        """
-        # If events list is provided, search through it
-        if events is not None:
-            return next(
-                (
-                    e
-                    for e in events
-                    if isinstance(e, MessageAction) and e.source == EventSource.USER
-                ),
-                None,
-            )
-
-        # Otherwise, use the original event stream logic with caching
-        # Return cached message if any
-        if self._cached_first_user_message is not None:
-            return self._cached_first_user_message
-
-        # Find the first user message
-        self._cached_first_user_message = next(
-            (
-                e
-                for e in self.event_stream.search_events(
-                    start_id=self.state.start_id,
-                )
-                if isinstance(e, MessageAction) and e.source == EventSource.USER
-            ),
-            None,
-        )
-        return self._cached_first_user_message
-
-    async def _perform_loop_recovery(
-        self, stuck_analysis: StuckDetector.StuckAnalysis
-    ) -> None:
+    async def _perform_loop_recovery(self) -> tuple[State, str]:
         """Perform loop recovery by truncating memory and restarting from before the loop."""
         recovery_point = stuck_analysis.loop_start_idx
 
