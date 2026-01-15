@@ -8,6 +8,7 @@
 # V1 replacement for this module lives in the Software Agent SDK.
 import copy
 import datetime
+import json as std_json
 import os
 import time
 import uuid
@@ -61,6 +62,75 @@ LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
     litellm.InternalServerError,
     LLMNoResponseError,
 )
+
+
+def _jsonify_for_log(obj: Any, _seen: set[int] | None = None) -> Any:
+    """Best-effort conversion to JSON-serializable primitives.
+
+    Completion logging should never fail just because some provider returns a
+    non-JSON-serializable object.
+    """
+    if _seen is None:
+        _seen = set()
+
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    obj_id = id(obj)
+    if obj_id in _seen:
+        return '<recursion>'
+    _seen.add(obj_id)
+
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        try:
+            return bytes(obj).decode('utf-8', errors='replace')
+        except Exception:
+            return str(obj)
+
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        try:
+            return obj.isoformat()
+        except Exception:
+            return str(obj)
+
+    if isinstance(obj, dict):
+        return {
+            str(k): _jsonify_for_log(v, _seen)
+            for k, v in obj.items()
+        }
+
+    if isinstance(obj, (list, tuple, set)):
+        return [_jsonify_for_log(v, _seen) for v in obj]
+
+    # pydantic v2
+    model_dump = getattr(obj, 'model_dump', None)
+    if callable(model_dump):
+        try:
+            return _jsonify_for_log(model_dump(), _seen)
+        except Exception:
+            pass
+
+    # pydantic v1
+    to_dict = getattr(obj, 'dict', None)
+    if callable(to_dict):
+        try:
+            return _jsonify_for_log(to_dict(), _seen)
+        except Exception:
+            pass
+
+    # some SDK objects provide to_dict
+    to_dict = getattr(obj, 'to_dict', None)
+    if callable(to_dict):
+        try:
+            return _jsonify_for_log(to_dict(), _seen)
+        except Exception:
+            pass
+
+    # fall back to string representation
+    try:
+        return str(obj)
+    except Exception:
+        return '<unserializable>'
 
 
 class LLM(RetryMixin, DebugMixin):
@@ -117,7 +187,15 @@ class LLM(RetryMixin, DebugMixin):
 
         # if using a custom tokenizer, make sure it's loaded and accessible in the format expected by litellm
         if self.config.custom_tokenizer is not None:
-            self.tokenizer = create_pretrained_tokenizer(self.config.custom_tokenizer)
+            try:
+                self.tokenizer = create_pretrained_tokenizer(self.config.custom_tokenizer)
+            except Exception as e:
+                # Do not crash OpenHands if tokenizer loading fails; fallback to default token counting.
+                logger.error(
+                    "Failed to load custom tokenizer; falling back to default token counting. "
+                    f"custom_tokenizer={self.config.custom_tokenizer!r} error={e!r}"
+                )
+                self.tokenizer = None
         else:
             self.tokenizer = None
 
@@ -569,8 +647,23 @@ class LLM(RetryMixin, DebugMixin):
                     # Save fncall_messages/response separately
                     _d['fncall_messages'] = original_fncall_messages
                     _d['fncall_response'] = resp
-                with open(log_file, 'w') as f:
-                    f.write(json.dumps(_d))
+                # Best-effort logging: never let serialization/logging failures
+                # crash the main LLM call.
+                try:
+                    payload = std_json.dumps(
+                        _jsonify_for_log(_d),
+                        ensure_ascii=False,
+                    )
+                except Exception as e:
+                    logger.warning(f'Failed to serialize completion log payload: {e}')
+                else:
+                    try:
+                        with open(log_file, 'w', encoding='utf-8') as f:
+                            f.write(payload)
+                    except Exception as e:
+                        logger.warning(
+                            f'Failed to write completion log to {log_file}: {e}'
+                        )
 
             return resp
 
