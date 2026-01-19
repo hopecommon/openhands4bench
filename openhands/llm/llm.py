@@ -185,10 +185,26 @@ class LLM(RetryMixin, DebugMixin):
         if self.is_function_calling_active():
             logger.debug('LLM: model supports function calling')
 
-        # if using a custom tokenizer, make sure it's loaded and accessible in the format expected by litellm
+        # if using a custom tokenizer, make sure it's loaded and accessible
         if self.config.custom_tokenizer is not None:
             try:
-                self.tokenizer = create_pretrained_tokenizer(self.config.custom_tokenizer)
+                tokenizer_path = self.config.custom_tokenizer
+                
+                # For local paths (starting with /), use transformers.AutoTokenizer
+                # For HuggingFace IDs, use litellm's create_pretrained_tokenizer
+                if tokenizer_path.startswith('/'):
+                    # Local path - use transformers directly
+                    from transformers import AutoTokenizer
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        tokenizer_path,
+                        trust_remote_code=True
+                    )
+                    logger.info(f"Loaded local tokenizer from: {tokenizer_path}")
+                else:
+                    # HuggingFace ID - use litellm's helper
+                    self.tokenizer = create_pretrained_tokenizer(tokenizer_path)
+                    logger.info(f"Loaded HuggingFace tokenizer: {tokenizer_path}")
+                    
             except Exception as e:
                 # Do not crash OpenHands if tokenizer loading fails; fallback to default token counting.
                 logger.error(
@@ -938,16 +954,17 @@ class LLM(RetryMixin, DebugMixin):
 
         return cur_cost
 
-    def get_token_count(self, messages: list[dict] | list[Message]) -> int:
+    def get_token_count(self, messages: list[dict] | list[Message], tools: list[dict] | None = None) -> int:
         """Get the number of tokens in a list of messages. Use dicts for better token counting.
 
         Args:
             messages (list): A list of messages, either as a list of dicts or as a list of Message objects.
+            tools (list, optional): A list of tool definitions to include in token counting.
 
         Returns:
             int: The number of tokens.
         """
-        # attempt to convert Message objects to dicts, litellm expects dicts
+        # attempt to convert Message objects to dicts
         if (
             isinstance(messages, list)
             and len(messages) > 0
@@ -965,29 +982,84 @@ class LLM(RetryMixin, DebugMixin):
             # Use explicit typing to satisfy mypy
             messages_typed: list[Message] = messages  # type: ignore
             messages = self.format_messages_for_llm(messages_typed)
+        
+        # CRITICAL: Normalize content format to string for consistent token counting
+        # GLM-4 and other models are sensitive to content format (list vs string)
+        # This ensures Runtime and Validation token counts match exactly
+        messages = self._normalize_content_format(messages)
 
-        # try to get the token count with the default litellm tokenizers
-        # or the custom tokenizer if set for this LLM configuration
-        try:
-            return int(
-                litellm.token_counter(
-                    model=self.config.model,
-                    messages=messages,
-                    custom_tokenizer=self.tokenizer,
+        # PRIORITY 1: Try to use tokenizer.apply_chat_template if custom tokenizer is available
+        # This provides the most accurate token count that matches actual model behavior
+        if self.tokenizer is not None:
+            try:
+                # Normalize tool calls: convert string arguments to dicts
+                normalized_messages = self._normalize_tool_calls_for_tokenizer(messages)
+                
+                # Use apply_chat_template for accurate token counting
+                token_ids = self.tokenizer.apply_chat_template(
+                    normalized_messages,
+                    tokenize=True,
+                    add_generation_prompt=False,
+                    tools=tools if tools else None
                 )
+                token_count = len(token_ids)
+                logger.debug(
+                    f'Token count via apply_chat_template: {token_count} '
+                    f'(messages: {len(messages)}, tools: {len(tools) if tools else 0})'
+                )
+                # Save metadata about the counting method
+                self._last_token_counting_method = {
+                    'method': 'apply_chat_template',
+                    'tokenizer': self.tokenizer.name_or_path if hasattr(self.tokenizer, 'name_or_path') else str(type(self.tokenizer)),
+                    'message_count': len(messages),
+                    'tools_count': len(tools) if tools else 0,
+                    'token_count': token_count,
+                }
+                return token_count
+            except Exception as e:
+                logger.warning(
+                    f'Failed to count tokens with apply_chat_template, falling back to litellm: {e}'
+                )
+
+        # PRIORITY 2: Fall back to litellm.token_counter
+        try:
+            token_counter_kwargs = {
+                'model': self.config.model,
+                'messages': messages,
+                'custom_tokenizer': self.tokenizer,
+            }
+            if tools is not None:
+                token_counter_kwargs['tools'] = tools
+            
+            token_count = int(litellm.token_counter(**token_counter_kwargs))
+            logger.debug(
+                f'Token count via litellm.token_counter: {token_count} '
+                f'(messages: {len(messages)}, tools: {len(tools) if tools else 0})'
             )
+            # Save metadata about the counting method
+            self._last_token_counting_method = {
+                'method': 'litellm',
+                'model': self.config.model,
+                'message_count': len(messages),
+                'tools_count': len(tools) if tools else 0,
+                'token_count': token_count,
+            }
+            return token_count
         except Exception as e:
-            # If token counting fails, try a safe fallback tokenizer before giving up.
+            # PRIORITY 3: If token counting fails, try a safe fallback tokenizer
             if self.tokenizer is None:
                 try:
                     fallback = create_pretrained_tokenizer('cl100k_base')
-                    return int(
-                        litellm.token_counter(
-                            model=self.config.model,
-                            messages=messages,
-                            custom_tokenizer=fallback,
-                        )
-                    )
+                    fallback_kwargs = {
+                        'model': self.config.model,
+                        'messages': messages,
+                        'custom_tokenizer': fallback,
+                    }
+                    if tools is not None:
+                        fallback_kwargs['tools'] = tools
+                    token_count = int(litellm.token_counter(**fallback_kwargs))
+                    logger.debug(f'Token count via fallback tokenizer: {token_count}')
+                    return token_count
                 except Exception:
                     pass
             # limit logspam in case token count is not supported
@@ -1000,6 +1072,92 @@ class LLM(RetryMixin, DebugMixin):
                 )
             )
             return 0
+
+    def _normalize_content_format(self, messages: list[dict]) -> list[dict]:
+        """
+        Normalize message content to string format for consistent token counting.
+        
+        GLM-4 and other models' apply_chat_template are sensitive to content format:
+        - List format: [{'type': 'text', 'text': '...'}] → More tokens
+        - String format: '...' → Fewer tokens (~7% difference for GLM-4)
+        
+        This method ensures:
+        1. Runtime token counting uses string format
+        2. llm_messages.json saves string format
+        3. Validation uses string format
+        4. Token counts match exactly across all stages
+        
+        Args:
+            messages: List of message dicts with potentially list-formatted content
+            
+        Returns:
+            List of messages with string-formatted content
+        """
+        normalized_messages = []
+        for msg in messages:
+            new_msg = msg.copy()
+            content = new_msg.get('content')
+            
+            # Convert list content to string
+            if isinstance(content, list):
+                text_parts = []
+                for item in content:
+                    if isinstance(item, dict) and 'text' in item:
+                        text_parts.append(item['text'])
+                    elif isinstance(item, str):
+                        text_parts.append(item)
+                new_msg['content'] = ''.join(text_parts)
+            
+            normalized_messages.append(new_msg)
+        
+        return normalized_messages
+
+    def _normalize_tool_calls_for_tokenizer(self, messages: list[dict]) -> list[dict]:
+        """
+        Normalize tool call arguments from JSON strings to dicts.
+        
+        The tokenizer.apply_chat_template expects tool call arguments as dicts,
+        but they may be stored as JSON strings in the messages.
+        
+        Args:
+            messages: List of message dicts
+            
+        Returns:
+            List of messages with normalized tool calls
+        """
+        import json as json_module
+        
+        normalized_messages = []
+        for msg in messages:
+            new_msg = msg.copy()
+            
+            # Only process assistant messages with tool_calls
+            tool_calls = new_msg.get('tool_calls')
+            if new_msg.get('role') == 'assistant' and tool_calls:
+                new_tool_calls = []
+                for tool_call in tool_calls:
+                    new_tc = tool_call.copy()
+                    
+                    if 'function' in new_tc:
+                        new_func = new_tc['function'].copy()
+                        args = new_func.get('arguments')
+                        
+                        # Convert string arguments to dict
+                        if isinstance(args, str):
+                            try:
+                                new_func['arguments'] = json_module.loads(args)
+                            except json_module.JSONDecodeError:
+                                # Keep as string if parsing fails
+                                pass
+                        
+                        new_tc['function'] = new_func
+                    new_tool_calls.append(new_tc)
+                
+                new_msg['tool_calls'] = new_tool_calls
+            
+            normalized_messages.append(new_msg)
+        
+        return normalized_messages
 
     def _is_local(self) -> bool:
         """Determines if the system is using a locally running LLM.

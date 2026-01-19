@@ -16,10 +16,44 @@ class ToolResponseDiscardCondenser(RollingCondenser):
     """
 
     def get_condensation(self, view: View) -> Condensation:
+        """Discard tool responses only before the last assistant action.
+        
+        This matches the reference implementation's behavior:
+        - Find the last assistant action in the view
+        - Only discard tool responses BEFORE that last assistant action
+        - Keep tool responses AFTER the last assistant action (recent context)
+        """
+        from openhands.events.action.action import Action
+        
+        # Find the index of the last assistant action
+        last_assistant_idx = -1
+        for idx, event in enumerate(view.events):
+            if isinstance(event, Action) and event.source and event.source.value == 'agent':
+                last_assistant_idx = idx
+        
+        # If no assistant action found or it's the first event, nothing to discard
+        if last_assistant_idx <= 0:
+            logger.info('ToolResponseDiscardCondenser: No assistant actions found or assistant is first event, nothing to discard')
+            action = CondensationAction(
+                forgotten_event_ids=[],
+                metadata={
+                    'strategy': 'discard_all',
+                    'trigger': 'condensation_request',
+                    'total_events': len(view.events),
+                    'total_tool_responses': 0,
+                    'redacted_tool_responses': 0,
+                    'already_omitted_tool_responses': 0,
+                    'discard_ratio': 0.0,
+                },
+            )
+            return Condensation(action=action)
+        
+        # Only process events BEFORE the last assistant action
         redacted_count = 0
         already_omitted_count = 0
         total_tool_responses = 0
-        for event in view.events:
+        
+        for event in view.events[:last_assistant_idx]:
             if isinstance(event, Observation) and event.tool_call_metadata is not None:
                 total_tool_responses += 1
                 if event.content == 'omitted':

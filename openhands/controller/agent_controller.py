@@ -364,7 +364,30 @@ class AgentController:
                         max_message_chars=getattr(llm.config, 'max_message_chars', None),
                         vision_is_active=bool(getattr(llm, 'vision_is_active', lambda: False)()),
                     )
-                    payload = {'messages': messages_to_results_format(messages)}
+                    try:
+                        payload = {'messages': messages_to_results_format(messages)}
+                    except Exception as convert_err:
+                        logger.warning(f'Failed to convert messages to results format: {convert_err}')
+                        # Try serializing individual messages to find the problematic one
+                        formatted_messages = []
+                        for i, msg in enumerate(messages):
+                            try:
+                                formatted = messages_to_results_format([msg])
+                                formatted_messages.extend(formatted)
+                            except Exception as msg_err:
+                                logger.warning(f'Failed to format message {i}: {msg_err}, msg type: {type(msg)}, role: {getattr(msg, "role", "?")}')
+                                # Skip problematic message or add placeholder
+                                continue
+                        payload = {'messages': formatted_messages}
+                    
+                    # Add tools schema used for token counting (similar to system message reference)
+                    tools_for_counting = getattr(self.agent, '_last_tools_for_counting', None)
+                    if tools_for_counting is not None:
+                        payload['tools'] = tools_for_counting
+                        logger.info(f'Saved {len(tools_for_counting)} tools to llm_messages.json')
+                    else:
+                        logger.warning('No tools_for_counting found, validation may use different tools')
+                    
                     path = get_conversation_llm_messages_filename(self.id, self.user_id)
                     self.file_store.write(
                         path,
@@ -475,6 +498,7 @@ class AgentController:
                 f'Error while running the agent (session ID: {self.id}): {e}',
                 exc_info=True,
             )
+            self._write_context_snapshot_for_exception(e)
             if isinstance(e, LLMContextWindowExceedError):
                 abort_metadata = self._get_discard_all_abort_metadata()
                 if abort_metadata is not None:
@@ -512,6 +536,42 @@ class AgentController:
                     f'Unknown exception type while running the agent: {type(e).__name__}.',
                 )
             await self._react_to_exception(reported)
+
+    def _write_context_snapshot_for_exception(self, exc: Exception) -> None:
+        if not self.file_store:
+            return
+        snapshot = self.state.extra_data.pop(CONTEXT_SNAPSHOT_PENDING_KEY, None)
+        if not snapshot:
+            return
+
+        snapshot['action_event_id'] = None
+        snapshot['action_type'] = 'Exception'
+        snapshot['exception'] = type(exc).__name__
+        snapshot['exception_message'] = str(exc)
+        snapshot['saved_at'] = datetime.now().isoformat()
+
+        system_prompt_content = snapshot.pop('system_prompt_content', None)
+        system_prompt_hash = snapshot.get('system_prompt_hash')
+        if system_prompt_content and system_prompt_hash:
+            prompt_path = get_conversation_system_prompt_filename(
+                self.event_stream.sid, system_prompt_hash, self.event_stream.user_id
+            )
+            try:
+                self.file_store.read(prompt_path)
+            except FileNotFoundError:
+                self.file_store.write(prompt_path, system_prompt_content)
+            except Exception as exc_inner:
+                logger.warning(f'Failed to store system prompt snapshot: {exc_inner}')
+
+        snapshot_path = get_conversation_context_snapshot_filename(
+            self.event_stream.sid,
+            int(snapshot.get('snapshot_id', 0)),
+            self.event_stream.user_id,
+        )
+        try:
+            self.file_store.write(snapshot_path, json.dumps(snapshot, indent=2))
+        except Exception as exc_inner:
+            logger.warning(f'Failed to store context snapshot: {exc_inner}')
 
     def should_step(self, event: Event) -> bool:
         """Whether the agent should take a step based on an event.

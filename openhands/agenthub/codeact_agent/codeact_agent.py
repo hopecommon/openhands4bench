@@ -277,11 +277,32 @@ class CodeActAgent(Agent):
         context_limit = self.config.context_window_limit_tokens
         if context_limit:
             try:
-                token_count = self.llm.get_token_count(messages)
+                # Include tools in token counting to match actual LLM request
+                tools_for_counting = check_tools(self.tools, self.llm.config)
+                # Save tools for later use (e.g., in llm_messages.json)
+                self._last_tools_for_counting = tools_for_counting
+                token_count = self.llm.get_token_count(messages, tools=tools_for_counting)
             except Exception as e:
                 logger.warning(f'Failed to estimate token count: {e}')
             else:
                 if token_count > context_limit:
+                    if self.config.save_context_snapshots:
+                        snapshot = self._build_context_snapshot(
+                            state=state,
+                            condensed_history=condensed_history,
+                            forgotten_event_ids=forgotten_event_ids,
+                            messages=messages,
+                            token_count=token_count,
+                        )
+                        snapshot['trigger'] = 'context_window_limit'
+                        snapshot['context_window_exceeded'] = True
+                        snapshot['exceeded_by'] = token_count - context_limit
+                        # Save token counting metadata for debugging and validation
+                        if hasattr(self.llm, '_last_token_counting_method'):
+                            snapshot['token_counting_method'] = self.llm._last_token_counting_method
+                        # Save tools used for counting
+                        snapshot['tools_for_counting'] = tools_for_counting
+                        state.extra_data[CONTEXT_SNAPSHOT_PENDING_KEY] = snapshot
                     logger.warning(
                         'Context window limit exceeded: %s tokens > %s tokens',
                         token_count,
