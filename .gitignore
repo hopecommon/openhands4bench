@@ -264,4 +264,5 @@ test-results
 .eval_sessions
 
 .sii/
+!refer/analysis_react_agent.py
 refer/
