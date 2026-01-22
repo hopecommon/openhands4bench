@@ -227,6 +227,43 @@ class ToolResponseDiscardCondenserConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 
+class DynaContextCondenserConfig(BaseModel):
+    """Configuration for DynaContextCondenser."""
+
+    type: Literal['dynacontext'] = Field(default='dynacontext')
+    llm_config: LLMConfig = Field(
+        ..., description='Configuration for the LLM to use for summarization.'
+    )
+    judge_llm_config: LLMConfig | None = Field(
+        default=None,
+        description='Configuration for the LLM to use for judge voting.',
+    )
+    voting_k: int = Field(
+        default=5, description='Number of judge votes to collect.', ge=1
+    )
+    keep_first: int = Field(
+        default=1,
+        description='Number of initial events to always keep in history.',
+        ge=0,
+    )
+    keep_last: int = Field(
+        default=0,
+        description='Number of most recent events to keep alongside summary.',
+        ge=0,
+    )
+    early_turns: int = Field(
+        default=1,
+        description='Number of early turns to skip judge decisions after reset.',
+        ge=0,
+    )
+    max_event_length: int = Field(
+        default=10_000,
+        description='Maximum length of the event representations to be passed to the LLM.',
+    )
+
+    model_config = ConfigDict(extra='forbid')
+
+
 # Type alias for convenience
 CondenserConfig = (
     NoOpCondenserConfig
@@ -241,6 +278,7 @@ CondenserConfig = (
     | CondenserPipelineConfig
     | ConversationWindowCondenserConfig
     | ToolResponseDiscardCondenserConfig
+    | DynaContextCondenserConfig
 )
 
 
@@ -278,7 +316,27 @@ def condenser_config_from_toml_section(
         condenser_type = data.get('type', 'noop')
 
         # Handle LLM config reference if needed
-        if (
+        if condenser_type == 'dynacontext':
+            data_copy = data.copy()
+            if isinstance(data_copy.get('llm_config'), str):
+                llm_config_name = data_copy['llm_config']
+                if llm_configs and llm_config_name in llm_configs:
+                    data_copy['llm_config'] = llm_configs[llm_config_name]
+                else:
+                    logger.openhands_logger.warning(
+                        f"LLM config '{llm_config_name}' not found for condenser. Using default LLMConfig."
+                    )
+                    if llm_configs is not None:
+                        data_copy['llm_config'] = llm_configs.get('llm')
+            if isinstance(data_copy.get('judge_llm_config'), str):
+                llm_config_name = data_copy['judge_llm_config']
+                if llm_configs and llm_config_name in llm_configs:
+                    data_copy['judge_llm_config'] = llm_configs[llm_config_name]
+                else:
+                    if llm_configs is not None:
+                        data_copy['judge_llm_config'] = llm_configs.get('llm')
+            config = create_condenser_config(condenser_type, data_copy)
+        elif (
             condenser_type in ('llm', 'llm_attention', 'mem1')
             and 'llm_config' in data
             and isinstance(data['llm_config'], str)
@@ -346,6 +404,7 @@ def create_condenser_config(condenser_type: str, data: dict) -> CondenserConfig:
         'conversation_window': ConversationWindowCondenserConfig,
         'browser_output_masking': BrowserOutputCondenserConfig,
         'tool_response_discard': ToolResponseDiscardCondenserConfig,
+        'dynacontext': DynaContextCondenserConfig,
     }
 
     if condenser_type not in condenser_classes:

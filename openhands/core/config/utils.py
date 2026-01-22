@@ -24,6 +24,7 @@ from openhands.core.config.agent_config import AgentConfig
 from openhands.core.config.arg_utils import get_headless_parser
 from openhands.core.config.condenser_config import (
     CondenserConfig,
+    DynaContextCondenserConfig,
     LLMSummarizingCondenserConfig,
     Mem1CondenserConfig,
     NoOpCondenserConfig,
@@ -438,6 +439,16 @@ def apply_context_strategy(
             agent_config.condenser = Mem1CondenserConfig(
                 llm_config=llm_config,
                 type='mem1',
+            )
+            agent_config.enable_history_truncation = True
+        elif strategy == 'dynacontext':
+            judge_llm_config = llm_config
+            if hasattr(cfg, 'llms') and 'dynacontext_judge' in cfg.llms:
+                judge_llm_config = cfg.llms['dynacontext_judge']
+            agent_config.condenser = DynaContextCondenserConfig(
+                llm_config=llm_config,
+                judge_llm_config=judge_llm_config,
+                type='dynacontext',
             )
             agent_config.enable_history_truncation = True
         else:

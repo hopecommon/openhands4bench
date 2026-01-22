@@ -9,6 +9,7 @@ from openhands.core.config.condenser_config import (
     AmortizedForgettingCondenserConfig,
     BrowserOutputCondenserConfig,
     CondenserPipelineConfig,
+    DynaContextCondenserConfig,
     LLMAttentionCondenserConfig,
     LLMSummarizingCondenserConfig,
     Mem1CondenserConfig,
@@ -16,6 +17,7 @@ from openhands.core.config.condenser_config import (
     ObservationMaskingCondenserConfig,
     RecentEventsCondenserConfig,
     StructuredSummaryCondenserConfig,
+    condenser_config_from_toml_section,
 )
 from openhands.core.config.llm_config import LLMConfig
 from openhands.core.config.openhands_config import OpenHandsConfig
@@ -32,6 +34,7 @@ from openhands.memory.condenser.condenser import Condensation, RollingCondenser,
 from openhands.memory.condenser.impl import (
     AmortizedForgettingCondenser,
     BrowserOutputCondenser,
+    DynaContextCondenser,
     ImportantEventSelection,
     LLMAttentionCondenser,
     LLMSummarizingCondenser,
@@ -222,6 +225,40 @@ def test_observation_masking_condenser_from_config(mock_llm_registry):
 
     assert isinstance(condenser, ObservationMaskingCondenser)
     assert condenser.attention_window == attention_window
+
+
+def test_dynacontext_condenser_from_config(mock_llm_registry):
+    """Test that DynaContextCondenser objects can be made from config."""
+    config = DynaContextCondenserConfig(
+        llm_config=LLMConfig(model='gpt-4o', api_key='test_key'),
+        judge_llm_config=LLMConfig(model='gpt-4o-mini', api_key='test_key'),
+    )
+    condenser = Condenser.from_config(config, mock_llm_registry)
+
+    assert isinstance(condenser, DynaContextCondenser)
+    assert condenser.voting_k == 5
+    assert condenser.keep_first == 1
+    assert condenser.keep_last == 0
+
+
+def test_dynacontext_condenser_toml_judge_config_resolution():
+    """Test TOML config resolves judge_llm_config by name."""
+    data = {
+        'type': 'dynacontext',
+        'llm_config': 'main',
+        'judge_llm_config': 'judge',
+        'voting_k': 3,
+    }
+    llm_configs = {
+        'main': LLMConfig(model='gpt-4o', api_key='test_key'),
+        'judge': LLMConfig(model='gpt-4o-mini', api_key='test_key'),
+    }
+    result = condenser_config_from_toml_section(data, llm_configs)
+    config = result['condenser']
+
+    assert isinstance(config, DynaContextCondenserConfig)
+    assert config.judge_llm_config is not None
+    assert config.judge_llm_config.model == 'gpt-4o-mini'
 
 
 def test_observation_masking_condenser_respects_attention_window():

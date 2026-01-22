@@ -432,6 +432,12 @@ class CodeActAgent(Agent):
         messages: list[Message],
         token_count: int | None,
     ) -> dict:
+        from openhands.events.action.agent import CondensationRequestAction
+        from openhands.memory.condenser.condenser import get_condensation_metadata
+        from openhands.memory.condenser.impl.dynacontext_condenser import (
+            DynaContextCondenser,
+        )
+
         snapshot_id = next_snapshot_id(state)
         condensed_event_ids = [
             event.id for event in condensed_history if event.id != Event.INVALID_ID
@@ -476,6 +482,12 @@ class CodeActAgent(Agent):
             'forgotten_event_ids': sorted(forgotten_event_ids),
             'omitted_tool_response_event_ids': omitted_tool_response_event_ids,
         }
+        condenser_metadata = get_condensation_metadata(state)
+        if condenser_metadata:
+            snapshot['condenser_meta_latest'] = condenser_metadata[-1]
+
+        if isinstance(self.condenser, DynaContextCondenser):
+            snapshot['dynacontext_state'] = self.condenser.get_debug_state()
 
         if condensation_action_id is not None:
             snapshot['condensation_action_id'] = condensation_action_id
@@ -485,6 +497,23 @@ class CodeActAgent(Agent):
             snapshot['summary_offset'] = summary_offset
         if token_count is not None:
             snapshot['token_count'] = token_count
+
+        for event in reversed(state.history):
+            if isinstance(event, CondensationRequestAction):
+                if event.token_count is not None:
+                    snapshot['token_count_before'] = event.token_count
+                if event.context_limit is not None:
+                    snapshot['context_limit'] = event.context_limit
+                if (
+                    event.token_count is not None
+                    and event.context_limit is not None
+                ):
+                    snapshot['exceeded_by'] = (
+                        event.token_count - event.context_limit
+                    )
+                snapshot['condensation_request_id'] = event.id
+                snapshot['condensation_request_trigger'] = event.trigger
+                break
 
         if self.config.save_context_prompt:
             formatted_messages, system_prompt_hash, system_prompt_content = (

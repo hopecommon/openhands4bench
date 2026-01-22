@@ -387,6 +387,23 @@ class AgentController:
                         logger.info(f'Saved {len(tools_for_counting)} tools to llm_messages.json')
                     else:
                         logger.warning('No tools_for_counting found, validation may use different tools')
+
+                    try:
+                        from openhands.memory.condenser.condenser import get_condensation_metadata
+                        from openhands.memory.condenser.impl.dynacontext_condenser import (
+                            DynaContextCondenser,
+                        )
+
+                        payload['context_strategy'] = getattr(
+                            self.agent.config, 'context_strategy', None
+                        )
+                        condenser_metadata = get_condensation_metadata(self.state)
+                        if condenser_metadata:
+                            payload['condenser_meta_latest'] = condenser_metadata[-1]
+                        if isinstance(getattr(self.agent, 'condenser', None), DynaContextCondenser):
+                            payload['dynacontext_state'] = self.agent.condenser.get_debug_state()
+                    except Exception as meta_err:
+                        logger.warning(f'Failed to attach condenser metadata: {meta_err}')
                     
                     path = get_conversation_llm_messages_filename(self.id, self.user_id)
                     self.file_store.write(

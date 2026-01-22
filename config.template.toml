@@ -400,6 +400,7 @@ classpath = "my_package.my_module.MyCustomAgent"
 # - "recent": Keeps only recent events and discards older ones
 # - "llm": Uses an LLM to summarize conversation history
 # - "mem1": Maintains a persistent <think> memory summary (Mem1-style)
+# - "dynacontext": Uses judge voting to decide when to summarize context
 # - "amortized": Intelligently forgets older events while preserving important context
 # - "llm_attention": Uses an LLM to prioritize most relevant context
 type = "noop"
@@ -459,12 +460,34 @@ type = "noop"
 # Maximum size of history before triggering attention mechanism
 #max_size = 100
 
+# 8. DynaContext Condenser
+#type = "dynacontext"
+# Reference to an LLM config to use for summarization
+#llm_config = "condenser"
+# Reference to an LLM config to use for judge voting
+#judge_llm_config = "dynacontext_judge"
+# Number of judge votes to collect
+#voting_k = 5
+# Number of initial events to always keep (typically includes task description)
+#keep_first = 1
+# Number of most recent events to keep alongside summary
+#keep_last = 0
+# Number of early turns to skip judge decisions after reset
+#early_turns = 1
+
 # Example of a custom LLM configuration for condensers that require an LLM
 # If not provided, it falls back to the default LLM
 #[llm.condenser]
 #model = "gpt-4o"
 #temperature = 0.1
 #max_input_tokens = 1024
+
+# Example of a small model configuration for DynaContext judge voting
+#[llm.dynacontext_judge]
+#model = "gpt-4o-mini"
+#base_url = "https://api.example.com/v1"
+#api_key = "sk-..."
+#temperature = 0.0
 
 #################################### Eval ####################################
 # Configuration for the evaluation, please refer to the specific evaluation
