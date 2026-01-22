@@ -51,7 +51,11 @@ from openhands.events.action import (
     MessageAction,
 )
 from openhands.events.event import Event
-from openhands.events.observation import AgentCondensationObservation, Observation
+from openhands.events.observation import (
+    AgentCondensationObservation,
+    ContextStrategyObservation,
+    Observation,
+)
 from openhands.llm.llm_utils import check_tools
 from openhands.memory.condenser import Condenser
 from openhands.memory.condenser.condenser import Condensation, View
@@ -303,6 +307,26 @@ class CodeActAgent(Agent):
                         # Save tools used for counting
                         snapshot['tools_for_counting'] = tools_for_counting
                         state.extra_data[CONTEXT_SNAPSHOT_PENDING_KEY] = snapshot
+                    # Emit an in-band observation so the overflow signal is preserved in
+                    # trajectory, context snapshots, and exported llm_messages.json.
+                    state.history.append(
+                        ContextStrategyObservation(
+                            content=(
+                                f'Context window limit exceeded: {token_count} tokens > {context_limit} tokens'
+                            ),
+                            strategy=self.config.context_strategy,
+                            token_count=token_count,
+                            context_limit=context_limit,
+                            trigger='context_window_limit',
+                            metadata={
+                                'token_count': token_count,
+                                'context_limit': context_limit,
+                                'exceeded_by': token_count - context_limit,
+                                'trigger': 'context_window_limit',
+                            },
+                        )
+                    )
+
                     logger.warning(
                         'Context window limit exceeded: %s tokens > %s tokens',
                         token_count,

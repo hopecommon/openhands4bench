@@ -402,6 +402,25 @@ class AgentController:
                             payload['condenser_meta_latest'] = condenser_metadata[-1]
                         if isinstance(getattr(self.agent, 'condenser', None), DynaContextCondenser):
                             payload['dynacontext_state'] = self.agent.condenser.get_debug_state()
+
+                        # Persist the latest context window overflow signal (if any).
+                        overflow = None
+                        for evt in reversed(self.state.history):
+                            if (
+                                getattr(evt, 'observation', None) == 'context_strategy'
+                                and getattr(evt, 'trigger', None) == 'context_window_limit'
+                            ):
+                                overflow = {
+                                    'content': getattr(evt, 'content', None),
+                                    'strategy': getattr(evt, 'strategy', None),
+                                    'token_count': getattr(evt, 'token_count', None),
+                                    'context_limit': getattr(evt, 'context_limit', None),
+                                    'trigger': getattr(evt, 'trigger', None),
+                                    'metadata': getattr(evt, 'metadata', None),
+                                }
+                                break
+                        if overflow:
+                            payload['context_window_overflow_latest'] = overflow
                     except Exception as meta_err:
                         logger.warning(f'Failed to attach condenser metadata: {meta_err}')
                     
