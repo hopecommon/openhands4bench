@@ -10,6 +10,7 @@ from openhands.core.message import Message, TextContent
 from openhands.events.action.action import Action
 from openhands.events.action.agent import CondensationAction, CondensationRequestAction
 from openhands.events.action.message import MessageAction
+from openhands.events.action.message import SystemMessageAction
 from openhands.events.event import EventSource
 from openhands.events.serialization.event import event_to_dict, truncate_content
 from openhands.llm.llm import LLM
@@ -164,7 +165,13 @@ class DynaContextCondenser(RollingCondenser):
         self, events: list, *, hard_trigger: bool
     ) -> list:
         total_events = len(events)
-        keep_indices = set(range(min(self.keep_first, total_events)))
+
+        # Semantics: keep_first/keep_last should count *after* the system message.
+        # This matches the intent "keep_first keeps the first user task instruction".
+        keep_offset = 1 if (events and isinstance(events[0], SystemMessageAction)) else 0
+        keep_start = min(self.keep_first + keep_offset, total_events)
+        keep_indices = set(range(keep_start))
+
         if self.keep_last > 0:
             tail_start = max(total_events - self.keep_last, 0)
             keep_indices.update(range(tail_start, total_events))
@@ -401,7 +408,13 @@ class DynaContextCondenser(RollingCondenser):
     def get_condensation(self, view: View) -> Condensation:
         events = list(view)
         total_events = len(events)
-        keep_indices = set(range(min(self.keep_first, total_events)))
+
+        # Semantics: keep_first/keep_last should count *after* the system message.
+        # This matches the intent "keep_first keeps the first user task instruction".
+        keep_offset = 1 if (events and isinstance(events[0], SystemMessageAction)) else 0
+        keep_start = min(self.keep_first + keep_offset, total_events)
+        keep_indices = set(range(keep_start))
+
         if self.keep_last > 0:
             tail_start = max(total_events - self.keep_last, 0)
             keep_indices.update(range(tail_start, total_events))
@@ -419,17 +432,6 @@ class DynaContextCondenser(RollingCondenser):
 
         for index, event in enumerate(events):
             if index in keep_indices:
-                continue
-
-            # Semantics: never forget the initial user instruction event.
-            # keep_first is defined as "保留首条用户任务描述"; however, index-based slicing
-            # includes the system message at index 0. We therefore treat the first user
-            # message action (if present) as part of the preserved prefix.
-            if (
-                index == 1
-                and isinstance(event, MessageAction)
-                and event.source == EventSource.USER
-            ):
                 continue
 
             event_ids_to_forget.add(event.id)
