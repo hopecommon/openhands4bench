@@ -556,7 +556,10 @@ class ConversationMemory:
             message = Message(role='user', content=[TextContent(text=text)])
         elif isinstance(obs, AgentCondensationObservation):
             text = truncate_content(obs.content, max_message_chars)
-            message = Message(role='user', content=[TextContent(text=text)])
+            # Insert empty assistant before the summary to mimic prefill transition.
+            empty_assistant = Message(role='assistant', content=[TextContent(text='')])
+            summary_message = Message(role='user', content=[TextContent(text=text)])
+            return [empty_assistant, summary_message]
         elif isinstance(obs, FileDownloadObservation):
             text = truncate_content(obs.content, max_message_chars)
             message = Message(role='user', content=[TextContent(text=text)])

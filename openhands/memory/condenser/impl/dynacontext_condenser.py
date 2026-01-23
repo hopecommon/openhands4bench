@@ -41,18 +41,14 @@ Respond strictly in XML:
 """.strip()
 
 REPLACEMENT_JUDGE_PROMPT = """
-You are a Context Manager.
-Decide if the current raw conversation history should be replaced by the condensed narrative to save context window space.
+You are the Dynamic Context Steward for a ReAct-style assistant. Based on the latest dialogue you decide whether we need to consolidate the working context before the last turn. Consolidate only when a sub-task finished, a new strategy is being attempted, redundant content dominates, or the context budget is under pressure. Err on the side of NO when unsure.
 
 {history}
 
 ## Policy
-Replace context if:
-1. A distinct sub-task has been completed.
-2. The model is trapped (stuck in a loop or unable to progress).
-3. The model has attempted other methods.
+Default to NO unless a sub-task is finished, a new method starts, or redundant context is costly.
 
-Respond strictly in XML:
+Respond strictly in this XML format:
 <reasoning>
 Briefly explain your decision based on the policy.
 </reasoning>

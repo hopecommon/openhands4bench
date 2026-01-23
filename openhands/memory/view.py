@@ -82,8 +82,14 @@ class View(BaseModel):
                 f'Inserting summary at offset {insertion_offset} (raw={summary_offset})'
             )
 
+            summary_text = (
+                'For this task, you have already made the following progress, '
+                'summarized as follows:\n\n'
+                f'{summary}\n\n'
+                'Now continue work on it.'
+            )
             kept_events.insert(
-                insertion_offset, AgentCondensationObservation(content=summary)
+                insertion_offset, AgentCondensationObservation(content=summary_text)
             )
 
         # Check for an unhandled condensation request -- these are events closer to the
