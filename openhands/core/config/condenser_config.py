@@ -239,7 +239,12 @@ class DynaContextCondenserConfig(BaseModel):
         description='Configuration for the LLM to use for judge voting.',
     )
     voting_k: int = Field(
-        default=5, description='Number of judge votes to collect.', ge=1
+        default=3, description='Number of judge votes to collect.', ge=1
+    )
+    exclude_tail_max: int = Field(
+        default=0,
+        description='Maximum number of trailing events to exclude from summarization candidates (soft trigger only).',
+        ge=0,
     )
     keep_first: int = Field(
         default=1,

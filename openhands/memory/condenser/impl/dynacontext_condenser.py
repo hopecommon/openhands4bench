@@ -66,11 +66,12 @@ class DynaContextCondenser(RollingCondenser):
         self,
         llm: LLM,
         judge_llm: LLM,
-        voting_k: int = 5,
+        voting_k: int = 3,
         keep_first: int = 1,
         keep_last: int = 0,
         early_turns: int = 1,
         max_event_length: int = 10_000,
+        exclude_tail_max: int = 0,
     ):
         if voting_k < 1:
             raise ValueError(f'voting_k ({voting_k}) must be >= 1')
@@ -80,6 +81,10 @@ class DynaContextCondenser(RollingCondenser):
             raise ValueError(f'keep_last ({keep_last}) cannot be negative')
         if early_turns < 0:
             raise ValueError(f'early_turns ({early_turns}) cannot be negative')
+        if exclude_tail_max < 0:
+            raise ValueError(
+                f'exclude_tail_max ({exclude_tail_max}) cannot be negative'
+            )
 
         self.llm = llm
         self.judge_llm = judge_llm
@@ -88,6 +93,7 @@ class DynaContextCondenser(RollingCondenser):
         self.keep_last = keep_last
         self.early_turns = early_turns
         self.max_event_length = max_event_length
+        self.exclude_tail_max = exclude_tail_max
 
         self._last_seen_event_id = -1
         self._turns_since_reset = 0
@@ -137,12 +143,10 @@ class DynaContextCondenser(RollingCondenser):
     def _should_judge(self) -> bool:
         return self._turns_since_reset > self.early_turns
 
-    def _tail_exclusion_count(
-        self, events: list, exclude_tail_max: int = 2
-    ) -> int:
+    def _tail_exclusion_count(self, events: list) -> int:
         count = 0
         for event in reversed(events):
-            if count >= exclude_tail_max:
+            if count >= self.exclude_tail_max:
                 break
             if isinstance(event, MessageAction) and event.source == EventSource.USER:
                 break
@@ -188,52 +192,30 @@ class DynaContextCondenser(RollingCondenser):
         no_votes = 0
         reasoning_list: list[str] = []
         judge_votes: list[dict] = []
+
         max_attempts = self.voting_k * 3
         attempts_used = 0
         threshold = math.ceil(self.voting_k / 2)
 
-        while valid_votes < self.voting_k and attempts_used < max_attempts:
-            attempts_used += 1
+        def _one_vote() -> tuple[str | None, str | None, str | None]:
+            """Return (decision, reasoning, error_type)."""
             try:
                 response = self.judge_llm.completion(
                     messages=formatted,
                     extra_body={'metadata': self.llm_metadata},
                 )
             except Exception as exc:
-                judge_votes.append(
-                    {
-                        'decision': None,
-                        'parsed_ok': False,
-                        'reasoning_present': False,
-                        'error_type': 'exception',
-                    }
-                )
                 logger.warning('DynaContext: Judge call failed: %s', exc)
-                continue
+                return None, None, 'exception'
+
             content = response.choices[0].message.content if response else ''
             if not content:
-                judge_votes.append(
-                    {
-                        'decision': None,
-                        'parsed_ok': False,
-                        'reasoning_present': False,
-                        'error_type': 'empty',
-                    }
-                )
-                continue
+                return None, None, 'empty'
+
             decision_match = DECISION_PATTERN.search(content)
             if not decision_match:
-                judge_votes.append(
-                    {
-                        'decision': None,
-                        'parsed_ok': False,
-                        'reasoning_present': bool(
-                            REASONING_PATTERN.search(content)
-                        ),
-                        'error_type': 'parse_fail',
-                    }
-                )
-                continue
+                return None, None, 'parse_fail'
+
             decision = decision_match.group(1).strip().upper()
             reasoning_match = REASONING_PATTERN.search(content)
             reasoning = (
@@ -241,11 +223,77 @@ class DynaContextCondenser(RollingCondenser):
                 if reasoning_match
                 else 'No reasoning provided.'
             )
+            return decision, reasoning, None
+
+        # Fire a first synchronous concurrent batch. If the pool fails, fall back to serial.
+        try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=self.voting_k) as pool:
+                futures = [pool.submit(_one_vote) for _ in range(self.voting_k)]
+                for fut in as_completed(futures):
+                    attempts_used += 1
+                    decision, reasoning, error_type = fut.result()
+
+                    if decision is None:
+                        judge_votes.append(
+                            {
+                                'decision': None,
+                                'parsed_ok': False,
+                                'reasoning_present': False,
+                                'error_type': error_type,
+                            }
+                        )
+                        continue
+
+                    judge_votes.append(
+                        {
+                            'decision': decision,
+                            'parsed_ok': True,
+                            'reasoning_present': reasoning != 'No reasoning provided.',
+                            'error_type': None,
+                            'reasoning': reasoning,
+                        }
+                    )
+                    valid_votes += 1
+                    if decision == 'YES':
+                        yes_votes += 1
+                        reasoning_list.append(f'[Vote {valid_votes} YES]: {reasoning}')
+                    else:
+                        no_votes += 1
+                        reasoning_list.append(f'[Vote {valid_votes} NO]: {reasoning}')
+
+                    if yes_votes >= threshold or no_votes >= threshold:
+                        break
+
+        except Exception as exc:
+            logger.warning(
+                'DynaContext: concurrent judge voting failed; falling back to serial: %s',
+                exc,
+            )
+
+        # If concurrency produced insufficient valid votes (parse failures/timeouts),
+        # keep going serially until we collect enough or exhaust attempts.
+        while valid_votes < self.voting_k and attempts_used < max_attempts:
+            attempts_used += 1
+            decision, reasoning, error_type = _one_vote()
+
+            if decision is None:
+                judge_votes.append(
+                    {
+                        'decision': None,
+                        'parsed_ok': False,
+                        'reasoning_present': False,
+                        'error_type': error_type,
+                    }
+                )
+                continue
+
             judge_votes.append(
                 {
                     'decision': decision,
                     'parsed_ok': True,
-                    'reasoning_present': bool(reasoning_match),
+                    'reasoning_present': reasoning != 'No reasoning provided.',
                     'error_type': None,
                     'reasoning': reasoning,
                 }
@@ -265,6 +313,7 @@ class DynaContextCondenser(RollingCondenser):
             return False, {
                 'valid_votes': 0,
                 'yes_votes': 0,
+                'no_votes': 0,
                 'voting_k': self.voting_k,
                 'decision': False,
                 'reasoning': 'No valid votes collected.',
@@ -572,6 +621,7 @@ class DynaContextCondenser(RollingCondenser):
             keep_last=config.keep_last,
             early_turns=config.early_turns,
             max_event_length=config.max_event_length,
+            exclude_tail_max=config.exclude_tail_max,
         )
 
 
