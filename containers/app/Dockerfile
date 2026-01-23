@@ -85,7 +85,9 @@ RUN python openhands/core/download.py # No-op to download assets
 RUN find /app \! -group openhands -exec chgrp openhands {} +
 
 COPY --chown=openhands:openhands --chmod=770 --from=frontend-builder /app/build ./frontend/build
+# Keep entrypoint executable even when local git checkout loses the +x bit.
 COPY --chown=openhands:openhands --chmod=770 ./containers/app/entrypoint.sh /app/entrypoint.sh
+RUN chmod 770 /app/entrypoint.sh
 
 USER root
 
