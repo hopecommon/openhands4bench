@@ -420,6 +420,18 @@ class DynaContextCondenser(RollingCondenser):
         for index, event in enumerate(events):
             if index in keep_indices:
                 continue
+
+            # Semantics: never forget the initial user instruction event.
+            # keep_first is defined as "保留首条用户任务描述"; however, index-based slicing
+            # includes the system message at index 0. We therefore treat the first user
+            # message action (if present) as part of the preserved prefix.
+            if (
+                index == 1
+                and isinstance(event, MessageAction)
+                and event.source == EventSource.USER
+            ):
+                continue
+
             event_ids_to_forget.add(event.id)
 
         if len(summary_candidates) <= self.keep_first:
