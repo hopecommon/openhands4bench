@@ -73,10 +73,17 @@ class View(BaseModel):
                     break
 
         if summary is not None and summary_offset is not None:
-            logger.info(f'Inserting summary at offset {summary_offset}')
+            # Semantics: keep_first in our condensers is intended to preserve the initial
+            # USER task instruction(s). Since the system prompt message is always included
+            # at the beginning of the prompt, we insert the summary after:
+            #   system + keep_first user-visible events
+            insertion_offset = summary_offset + 1
+            logger.info(
+                f'Inserting summary at offset {insertion_offset} (raw={summary_offset})'
+            )
 
             kept_events.insert(
-                summary_offset, AgentCondensationObservation(content=summary)
+                insertion_offset, AgentCondensationObservation(content=summary)
             )
 
         # Check for an unhandled condensation request -- these are events closer to the
