@@ -403,6 +403,31 @@ class AgentController:
                         if isinstance(getattr(self.agent, 'condenser', None), DynaContextCondenser):
                             payload['dynacontext_state'] = self.agent.condenser.get_debug_state()
 
+                        # Collect all condenser trigger events from history
+                        condenser_triggers = []
+                        for idx, evt in enumerate(self.state.history):
+                            if getattr(evt, 'observation', None) == 'context_strategy':
+                                trigger_info = {
+                                    'step': idx,
+                                    'timestamp': getattr(evt, 'timestamp', None),
+                                    'strategy': (
+                                        getattr(evt, 'extras', {}).get('strategy')
+                                        or getattr(evt, 'strategy', None)
+                                    ),
+                                    'token_count': getattr(evt, 'token_count', None),
+                                    'context_limit': getattr(evt, 'context_limit', None),
+                                    'trigger': getattr(evt, 'trigger', None),
+                                    'message': getattr(evt, 'content', None) or getattr(evt, 'message', None),
+                                }
+                                condenser_triggers.append(trigger_info)
+                        
+                        if condenser_triggers:
+                            payload['condenser_statistics'] = {
+                                'total_triggers': len(condenser_triggers),
+                                'strategy': payload.get('context_strategy'),
+                                'trigger_details': condenser_triggers,
+                            }
+
                         # Persist the latest context window overflow signal (if any).
                         overflow = None
                         for evt in reversed(self.state.history):
