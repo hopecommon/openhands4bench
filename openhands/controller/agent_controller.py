@@ -52,7 +52,7 @@ from openhands.core.exceptions import (
 )
 from openhands.core.logger import LOG_ALL_EVENTS
 from openhands.core.logger import openhands_logger as logger
-from openhands.core.schema import AgentState
+from openhands.core.schema import AgentState, ObservationType
 from openhands.events import (
     EventSource,
     EventStream,
@@ -403,27 +403,47 @@ class AgentController:
                         if isinstance(getattr(self.agent, 'condenser', None), DynaContextCondenser):
                             payload['dynacontext_state'] = self.agent.condenser.get_debug_state()
 
-                        # Collect all condenser trigger events from history
-                        condenser_triggers = []
+                        # Collect condenser trigger events from history (ContextStrategyObservation).
+                        # This project prioritizes research reproducibility, so we keep full trigger details.
+                        condenser_triggers: list[dict] = []
                         for idx, evt in enumerate(self.state.history):
-                            if getattr(evt, 'observation', None) == 'context_strategy':
-                                trigger_info = {
+                            obs_type = getattr(evt, 'observation', None)
+                            if obs_type != ObservationType.CONTEXT_STRATEGY:
+                                continue
+
+                            strategy = getattr(evt, 'strategy', None)
+                            trigger = getattr(evt, 'trigger', None)
+                            token_count = getattr(evt, 'token_count', None)
+                            context_limit = getattr(evt, 'context_limit', None)
+
+                            condenser_triggers.append(
+                                {
                                     'step': idx,
                                     'timestamp': getattr(evt, 'timestamp', None),
-                                    'strategy': (
-                                        getattr(evt, 'extras', {}).get('strategy')
-                                        or getattr(evt, 'strategy', None)
-                                    ),
-                                    'token_count': getattr(evt, 'token_count', None),
-                                    'context_limit': getattr(evt, 'context_limit', None),
-                                    'trigger': getattr(evt, 'trigger', None),
-                                    'message': getattr(evt, 'content', None) or getattr(evt, 'message', None),
+                                    'strategy': strategy,
+                                    'token_count': token_count,
+                                    'context_limit': context_limit,
+                                    'trigger': trigger,
+                                    'content': getattr(evt, 'content', None),
+                                    'message': getattr(evt, 'message', None),
+                                    'metadata': getattr(evt, 'metadata', None),
                                 }
-                                condenser_triggers.append(trigger_info)
-                        
+                            )
+
                         if condenser_triggers:
+                            total_by_strategy: dict[str, int] = {}
+                            discard_all_count = 0
+                            for t in condenser_triggers:
+                                s = t.get('strategy')
+                                if isinstance(s, str):
+                                    total_by_strategy[s] = total_by_strategy.get(s, 0) + 1
+                                    if s.strip().lower().replace('-', '_') == 'discard_all':
+                                        discard_all_count += 1
+
                             payload['condenser_statistics'] = {
                                 'total_triggers': len(condenser_triggers),
+                                'total_by_strategy': total_by_strategy,
+                                'discard_all_triggers': discard_all_count,
                                 'strategy': payload.get('context_strategy'),
                                 'trigger_details': condenser_triggers,
                             }
@@ -432,7 +452,8 @@ class AgentController:
                         overflow = None
                         for evt in reversed(self.state.history):
                             if (
-                                getattr(evt, 'observation', None) == 'context_strategy'
+                                getattr(evt, 'observation', None)
+                                == ObservationType.CONTEXT_STRATEGY
                                 and getattr(evt, 'trigger', None) == 'context_window_limit'
                             ):
                                 overflow = {
